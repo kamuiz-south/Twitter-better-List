@@ -7,6 +7,8 @@
 X（旧 Twitter）の「リストから追加/削除」画面を使いやすくする Chrome 拡張機能です。
 X の有料 API は使わず、Web クライアント自身が行っている GraphQL 通信と画面の DOM を利用します。
 
+![使用例](使用例.png)
+
 ## 機能
 
 ### リスト追加/削除画面
@@ -84,19 +86,13 @@ X の有料 API は使わず、Web クライアント自身が行っている Gr
 
 ## インストール
 
-### GitHub から使う場合
-
 1. リポジトリの **Code** → **Download ZIP** をクリック
 2. ZIP を展開する
-3. `manifest.json` があるフォルダを、下記の手順で Chrome に読み込む
-
-### ローカルから使う場合
-
-1. Chrome で `chrome://extensions` を開く
-2. 右上の「デベロッパー モード」を ON
-3. 「パッケージ化されていない拡張機能を読み込む」をクリック
-4. このフォルダ（`manifest.json` があるフォルダ）を選択
-5. X を再読み込み
+3. Chrome で `chrome://extensions` を開く
+4. 右上の「デベロッパー モード」を ON
+5. 「パッケージ化されていない拡張機能を読み込む」をクリック
+6. このフォルダ（`manifest.json` があるフォルダ）を選択
+7. X を再読み込み
 
 Chrome 111 以降が必要です（MAIN world の content script を利用するため）。
 
@@ -148,42 +144,6 @@ CPT の設定変更は自動で反映されます。X 側でメニュー項目�
 - リスト取得は、X のページ内で使われている GraphQL リクエストの仕組みを利用
 - 追加・削除はネイティブの「保存」に任せる
 
-## ファイル構成
-
-```text
-manifest.json          MV3 設定
-src/main-world.js      X の GraphQL 通信を監視する MAIN world スクリプト
-src/content.js         リスト画面の検出・並び替え・お気に入り・タグ・自動読み込み
-src/lists-page.js      /<ユーザー名>/lists の並び替え・フィルター
-src/sidebar.js         More メニューの展開
-src/content.css        注入 UI のスタイル
-popup.html/js/css      設定ポップアップ
-icons/                 拡張機能アイコン
-  icon_orig.png        アイコンの元画像（400×400）
-  icon16/32/48/128.png 各サイズ
-```
-
-## 開発メモ
-
-構文チェック:
-
-```powershell
-node --check src/main-world.js
-node --check src/content.js
-node --check src/lists-page.js
-node --check src/sidebar.js
-node --check popup.js
-node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8')); console.log('manifest ok')"
-```
-
-### テスト時の制約
-
-デバッグアカウントで確認する場合は、次の制約を守ってください。
-
-- テスト用に作成するリストは必ず非公開（Private）にする
-- 追加するアカウントは企業・AI・X 関連のアカウントに限定する
-- テストと無関係な投稿・いいね・ブックマーク・リスト追加を行わない
-- 動作確認後は、テスト用のメンバー変更を残さない
 
 ### 既知の制限
 
