@@ -1,0 +1,814 @@
+/* Twitter Better List - injected UI */
+
+:root {
+  --tbl-bg: rgba(255, 255, 255, 0.92);
+  --tbl-bg-solid: #ffffff;
+  --tbl-border: rgba(0, 0, 0, 0.12);
+  --tbl-text: #0f1419;
+  --tbl-muted: #536471;
+  --tbl-hover: rgba(15, 20, 25, 0.08);
+  --tbl-sidebar-hover: rgba(15, 20, 25, 0.1);
+  --tbl-active-bg: #0f1419;
+  --tbl-active-text: #ffffff;
+  --tbl-accent: #1d9bf0;
+  --tbl-star: #f5b301;
+  --tbl-danger: #f4212e;
+  --tbl-panel: rgba(0, 0, 0, 0.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tbl-bg: rgba(0, 0, 0, 0.82);
+    --tbl-bg-solid: #000000;
+    --tbl-border: rgba(255, 255, 255, 0.16);
+    --tbl-text: #e7e9ea;
+    --tbl-muted: #71767b;
+    --tbl-hover: rgba(231, 233, 234, 0.1);
+    --tbl-sidebar-hover: rgba(231, 233, 234, 0.1);
+    --tbl-active-bg: #eff3f4;
+    --tbl-active-text: #0f1419;
+    --tbl-panel: rgba(255, 255, 255, 0.06);
+  }
+}
+
+html[data-theme="dark"] {
+  --tbl-bg: rgba(0, 0, 0, 0.82);
+  --tbl-bg-solid: #000000;
+  --tbl-border: rgba(255, 255, 255, 0.16);
+  --tbl-text: #e7e9ea;
+  --tbl-muted: #71767b;
+  --tbl-hover: rgba(231, 233, 234, 0.1);
+  --tbl-sidebar-hover: rgba(231, 233, 234, 0.1);
+  --tbl-active-bg: #eff3f4;
+  --tbl-active-text: #0f1419;
+  --tbl-panel: rgba(255, 255, 255, 0.06);
+}
+
+html[data-theme="dim"] {
+  --tbl-sidebar-hover: rgba(231, 233, 234, 0.1);
+}
+
+html[data-theme="light"] {
+  --tbl-bg: rgba(255, 255, 255, 0.92);
+  --tbl-bg-solid: #ffffff;
+  --tbl-border: rgba(0, 0, 0, 0.12);
+  --tbl-text: #0f1419;
+  --tbl-muted: #536471;
+  --tbl-hover: rgba(15, 20, 25, 0.08);
+  --tbl-sidebar-hover: rgba(15, 20, 25, 0.1);
+  --tbl-active-bg: #0f1419;
+  --tbl-active-text: #ffffff;
+  --tbl-panel: rgba(0, 0, 0, 0.04);
+}
+
+/* ------------------------------------------------------------------ */
+/* toolbar                                                            */
+/* ------------------------------------------------------------------ */
+
+.tbl-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 9px 16px;
+  margin: 0;
+  background: var(--tbl-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--tbl-border);
+  color: var(--tbl-text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+.tbl-toolbar-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.tbl-toolbar-title {
+  font-weight: 700;
+  margin-right: 2px;
+  color: var(--tbl-text);
+  white-space: nowrap;
+}
+
+.tbl-fav-filter {
+  border: 1px solid var(--tbl-border);
+  background: var(--tbl-panel);
+}
+
+.tbl-fav-filter.is-active {
+  border-color: transparent;
+  background: var(--tbl-active-bg);
+  color: var(--tbl-active-text);
+}
+
+.tbl-sort-group {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9999px;
+  background: var(--tbl-panel);
+}
+
+.tbl-sort-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--tbl-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 6px 10px;
+  border-radius: 9999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.tbl-sort-btn:hover {
+  background: var(--tbl-hover);
+  color: var(--tbl-text);
+}
+
+.tbl-sort-btn.is-active {
+  background: var(--tbl-active-bg);
+  color: var(--tbl-active-text);
+}
+
+/* お気に入りフィルター中はソートが効かないことを視覚的に示す */
+.tbl-sort-group.is-muted {
+  opacity: 0.4;
+  filter: grayscale(1);
+  pointer-events: none;
+}
+
+.tbl-sort-group.is-muted .tbl-sort-btn {
+  cursor: default;
+}
+
+/*
+ * Keep the count and ↻ together.  Previously the status had margin-left:auto
+ * and the refresh button was a separate flex item, so a longer filtered count
+ * wrapped the button alone onto the next line.
+ */
+.tbl-toolbar-tail {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  gap: 8px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.tbl-toolbar-tail .tbl-status {
+  margin-left: 0;
+}
+
+.tbl-status {
+  color: var(--tbl-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tbl-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.tbl-filter-label {
+  flex: 0 0 auto;
+  color: var(--tbl-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.tbl-filter-chips {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tbl-filter-chips::-webkit-scrollbar {
+  display: none;
+}
+
+.tbl-filter-chip,
+.tbl-filter-clear {
+  appearance: none;
+  flex: 0 0 auto;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--tbl-muted);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 5px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.tbl-filter-chip:hover,
+.tbl-filter-clear:hover {
+  background: var(--tbl-hover);
+  color: var(--tbl-text);
+}
+
+.tbl-filter-chip.is-active {
+  border-color: var(--tbl-accent);
+  background: var(--tbl-accent);
+  color: #fff;
+}
+
+.tbl-filter-clear {
+  padding: 5px 8px;
+}
+
+.tbl-filter-empty {
+  color: var(--tbl-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.tbl-refresh-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--tbl-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tbl-refresh-btn:hover:not(:disabled) {
+  background: var(--tbl-hover);
+  color: var(--tbl-text);
+}
+
+.tbl-refresh-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.tbl-refresh-btn.is-spinning {
+  animation: tbl-spin 900ms linear infinite;
+}
+
+/*
+ * While the native pagination is being completed off-screen, hide the
+ * virtualized rows (but keep their layout) so the user never sees partial
+ * pages, count jumps, or rows being reordered under the virtualizer.
+ */
+[data-tbl-preparing="1"] div[data-viewportview="true"] > section {
+  visibility: hidden !important;
+}
+
+[data-tbl-expanded="1"] div[data-viewportview="true"] {
+  scrollbar-width: none;
+}
+
+[data-tbl-expanded="1"] div[data-viewportview="true"]::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes tbl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* row actions                                                        */
+/* ------------------------------------------------------------------ */
+
+.tbl-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
+
+/* 現行 UI の行は position:absolute なので、操作ボタンを右端に重ねる */
+.tbl-row-actions.is-overlay {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 3;
+  margin: 0;
+  padding-left: 6px;
+}
+
+[data-tbl-row="1"] [data-testid="listCell"] {
+  padding-right: 124px !important;
+}
+
+/* フィルタで非表示になった行は、仮想リストの配置計算からも高さ 0 になる */
+[data-tbl-filtered="1"] {
+  display: none !important;
+}
+
+.tbl-row-actions.is-overlay .tbl-icon-btn {
+  width: 25px;
+  height: 25px;
+}
+
+.tbl-icon-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--tbl-muted);
+  font-family: inherit;
+  font-size: 17px;
+  line-height: 1;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 9999px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.tbl-icon-btn:hover:not(:disabled) {
+  background: var(--tbl-hover);
+}
+
+.tbl-icon-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.tbl-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tbl-tag-btn {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.tbl-tag-btn.has-tags {
+  color: var(--tbl-accent);
+}
+
+.tbl-star {
+  font-size: 18px;
+}
+
+.tbl-star.is-favorite {
+  color: var(--tbl-star);
+  text-shadow: 0 0 10px rgba(245, 179, 1, 0.28);
+}
+
+.tbl-move {
+  font-size: 9px;
+  color: var(--tbl-muted);
+}
+
+.tbl-move:hover:not(:disabled) {
+  color: var(--tbl-text);
+}
+
+/* ------------------------------------------------------------------ */
+/* own lists page (/<user>/lists)                                     */
+/* ------------------------------------------------------------------ */
+
+/* ページ内の通常フローに置く。ダイアログ用の sticky は使わない。 */
+.tbl-page-toolbar {
+  position: relative;
+  top: auto;
+  z-index: 1;
+}
+
+.tbl-page-hidden {
+  display: none !important;
+}
+
+.tbl-page-discover-hidden {
+  display: none !important;
+}
+
+.tbl-page-discover-toggle {
+  appearance: none;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--tbl-border);
+  background: var(--tbl-bg-solid);
+  color: var(--tbl-muted);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tbl-page-discover-toggle:hover {
+  background: var(--tbl-hover);
+  color: var(--tbl-text);
+}
+
+.tbl-page-discover-toggle:focus-visible {
+  outline: 2px solid var(--tbl-accent);
+  outline-offset: -2px;
+}
+
+[data-tbl-page-row="1"] {
+  overflow: visible;
+}
+
+.tbl-row-actions.is-page-actions {
+  position: absolute;
+  right: 10px;
+  bottom: 6px;
+  top: auto;
+  transform: none;
+  z-index: 6;
+  margin: 0;
+  padding: 1px;
+  gap: 0;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9999px;
+  background: var(--tbl-bg-solid);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.tbl-row-actions.is-page-actions.is-page-inline {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  align-self: center;
+  margin: 0 2px 0 0;
+  padding: 0;
+  gap: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 自分のリストでは # / ☆ を常に表示する（ホバー待ちにしない）。 */
+[data-tbl-page-row="1"] .tbl-row-actions.is-page-actions,
+[data-tbl-page-row="1"]:hover .tbl-row-actions.is-page-actions,
+.tbl-row-actions.is-page-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none) {
+  .tbl-row-actions.is-page-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* tag editor                                                         */
+/* ------------------------------------------------------------------ */
+
+.tbl-tag-popover {
+  position: fixed;
+  z-index: 2147483000;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: min(300px, calc(100vw - 16px));
+  padding: 12px;
+  border: 1px solid var(--tbl-border);
+  border-radius: 14px;
+  background: var(--tbl-bg-solid);
+  color: var(--tbl-text);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.tbl-tag-popover-heading {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--tbl-muted);
+}
+
+.tbl-tag-popover-name {
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tbl-tag-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9px;
+  outline: none;
+  background: var(--tbl-panel);
+  color: var(--tbl-text);
+  font: inherit;
+}
+
+.tbl-tag-input:focus {
+  border-color: var(--tbl-accent);
+  box-shadow: 0 0 0 2px rgba(29, 155, 240, 0.2);
+}
+
+.tbl-tag-select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9px;
+  outline: none;
+  background: var(--tbl-panel);
+  color: var(--tbl-text);
+  font: inherit;
+}
+
+.tbl-tag-select:focus {
+  border-color: var(--tbl-accent);
+  box-shadow: 0 0 0 2px rgba(29, 155, 240, 0.2);
+}
+
+.tbl-tag-hint {
+  color: var(--tbl-muted);
+  font-size: 11px;
+}
+
+.tbl-tag-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.tbl-tag-action {
+  appearance: none;
+  border: 1px solid var(--tbl-border);
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--tbl-text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.tbl-tag-action:hover {
+  background: var(--tbl-hover);
+}
+
+.tbl-tag-action.is-primary {
+  border-color: transparent;
+  background: var(--tbl-accent);
+  color: #fff;
+}
+
+.tbl-tag-action.is-primary:hover {
+  filter: brightness(1.08);
+}
+
+.tbl-tag-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* ------------------------------------------------------------------ */
+/* sidebar                                                            */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 独自スクロールは持たせない。X のサイドバー本体（外側）だけがスクロール
+ * するため、縦幅が狭いときも「スクロールの中のスクロール」にならない。
+ */
+.tbl-sidebar-section {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 100%;
+  max-height: none;
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+}
+
+/*
+ * Rows are clones of the native sidebar <a>.  We only supply the pieces the
+ * native collapsed row does not have (a label), and make the native pill span
+ * the full sidebar when the sidebar is expanded.
+ */
+.tbl-sidebar-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  flex: 0 0 auto;
+  text-decoration: none;
+}
+
+/*
+ * X はネイティブ行の hover 時に pill へ一時クラスを足して背景を
+ * フェードインさせる。複製した行には React のイベントが無いため、
+ * 同じ 0.2s のフェードを CSS で再現する。
+ */
+.tbl-sidebar-item > div:first-child {
+  width: 100%;
+  transition: background-color 0.2s, box-shadow 0.2s;
+}
+
+.tbl-sidebar-item:hover > div:first-child,
+.tbl-sidebar-item:focus-visible > div:first-child {
+  background-color: var(--tbl-sidebar-hover);
+}
+
+.tbl-sidebar-section:not(.is-collapsed)
+  .tbl-sidebar-item
+  > div:first-child {
+  justify-content: flex-start;
+}
+
+/*
+ * When X collapses the sidebar, its native pill is still full-width and
+ * centers the icon inside it.  If our cloned pill stays intrinsic-width, all
+ * More icons sit left of the native icons and the section looks like it has a
+ * phantom scrollbar gutter.
+ */
+.tbl-sidebar-section.is-collapsed
+  .tbl-sidebar-item
+  > div:first-child {
+  justify-content: center;
+}
+
+.tbl-sidebar-item[aria-current="page"] {
+  font-weight: 700;
+}
+
+.tbl-sidebar-label {
+  min-width: 0;
+  margin-left: 20px;
+  margin-right: 16px;
+  overflow: hidden;
+  padding: 0;
+  color: var(--tbl-text);
+  /*
+   * These are the metrics X uses for its own expanded sidebar labels on
+   * Windows.  `inherit` resolves to the nav's 15px body font when the native
+   * label is not mounted yet, which made the expanded More section look
+   * different at non-100% zoom levels.
+   */
+  font-family: "Segoe UI", Meiryo, system-ui, -apple-system,
+    BlinkMacSystemFont, sans-serif !important;
+  font-size: 20px !important;
+  font-stretch: 100% !important;
+  font-weight: 400 !important;
+  letter-spacing: normal !important;
+  line-height: 24px !important;
+  text-align: start;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.tbl-sidebar-item[aria-current="page"] .tbl-sidebar-label {
+  font-weight: 700 !important;
+}
+
+.tbl-sidebar-badge {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background: var(--tbl-accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  transform: translateY(-50%);
+}
+
+.tbl-sidebar-section.is-collapsed .tbl-sidebar-label,
+.tbl-sidebar-section.is-collapsed .tbl-sidebar-badge {
+  display: none;
+}
+
+/* 元の More ボタンを隠す */
+[data-tbl-hidden-more="1"] {
+  display: none !important;
+}
+
+/*
+ * X がサイドバーを再描画して More ボタンを作り直しても、
+ * 一瞬だけ元の More が見えないようにする。抽出時はこの属性を外す。
+ */
+html[data-tbl-sidebar="1"] [data-testid="AppTabBar_More_Menu"] {
+  display: none !important;
+}
+
+/*
+ * メニュー抽出中はポップアップを一瞬だけ見せない。
+ * visibility ではなく opacity を使うこと: CPT の display:none 判定を
+ * 壊さずに、抽出中だけ見えなくするため。
+ */
+body[data-tbl-extracting="1"] [role="menu"] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+/* 抽出中だけ More を不可視にする。display:none にするとメニューの
+   位置計算が壊れるため、レイアウトを保つ visibility を使う。 */
+body[data-tbl-extracting="1"]
+  [data-testid="AppTabBar_More_Menu"] {
+  visibility: hidden !important;
+}
+
+/* ------------------------------------------------------------------ */
+/* toast                                                              */
+/* ------------------------------------------------------------------ */
+
+.tbl-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  z-index: 2147483647;
+  transform: translate(-50%, 12px);
+  max-width: min(90vw, 460px);
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: var(--tbl-bg-solid);
+  color: var(--tbl-text);
+  border: 1px solid var(--tbl-border);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.tbl-toast-show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.tbl-toast-error {
+  border-color: rgba(244, 33, 46, 0.55);
+}
+
+.tbl-toast-success {
+  border-color: rgba(0, 186, 124, 0.55);
+}

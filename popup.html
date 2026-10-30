@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=380, initial-scale=1" />
+    <title>Twitter Better List</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div class="logo" aria-hidden="true">BL</div>
+      <div>
+        <h1>Twitter Better List</h1>
+        <p class="sub">リスト追加画面の並び替えとお気に入り</p>
+      </div>
+    </header>
+
+    <main>
+      <section class="card">
+        <h2>既定の並び順</h2>
+        <div class="segmented" id="sort-group" role="group" aria-label="既定の並び順">
+          <button type="button" data-sort="name">名前順</button>
+          <button type="button" data-sort="newest">新しい順</button>
+          <button type="button" data-sort="oldest">古い順</button>
+        </div>
+        <label class="row">
+          <span>お気に入りを最上部に固定</span>
+          <input type="checkbox" id="favorites-first" />
+        </label>
+        <label class="row">
+          <span>未取得のリストを自動で読み込む</span>
+          <input type="checkbox" id="auto-load" />
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>サイドバー</h2>
+        <label class="row">
+          <span>「More」を展開する（投稿ボタンの上に項目を表示）</span>
+          <input type="checkbox" id="sidebar-enabled" />
+        </label>
+        <p class="hint">
+          オフにすると標準の「More」メニューのままになります。オンの場合も、反映にはページの再読み込みが必要です。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>リスト一覧ページ</h2>
+        <label class="row">
+          <span>「新しいリストを見つける」を完全に隠す</span>
+          <input type="checkbox" id="hide-discover" />
+        </label>
+        <p class="hint">
+          通常は一覧ページで折り畳んで表示します。オンにするとおすすめリストを完全に隠します。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>キャッシュ</h2>
+        <p class="meta" id="cache-meta">リストデータはまだありません。</p>
+        <div class="actions">
+          <button type="button" class="secondary" id="clear-cache">キャッシュを消去</button>
+          <button type="button" class="secondary" id="open-x">X を開く</button>
+        </div>
+        <p class="hint">
+          リストの追加・削除は X 本体のボタンで行われます。拡張機能が代行して追加することはありません。
+        </p>
+        <p class="hint">
+          キャッシュはブラウザを終了しても保持されます。X 側でリストを変更したときは、追加/削除画面の ↻ で更新してください。
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>バックアップ / 移動</h2>
+        <p class="hint">
+          お気に入り・タグ・設定だけを JSON にします。リストのキャッシュは含みません。
+        </p>
+        <textarea
+          id="backup-text"
+          class="backup-text"
+          spellcheck="false"
+          placeholder="エクスポートした JSON、または移行元の JSON を貼り付け"
+        ></textarea>
+        <div class="actions">
+          <button type="button" class="secondary" id="export-backup">
+            エクスポート
+          </button>
+          <button type="button" class="secondary" id="import-backup">
+            インポート
+          </button>
+        </div>
+        <p class="meta backup-status" id="backup-status"></p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span id="viewer">アカウント未検出</span>
+      <span class="version">v0.1.0</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

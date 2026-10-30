@@ -1,0 +1,36 @@
+{
+  "manifest_version": 3,
+  "name": "Twitter Better List",
+  "version": "0.1.0",
+  "description": "X (Twitter) のリスト追加/削除画面とリスト一覧を並び替え・お気に入り・タグ対応にし、左メニューの「More」を展開します。",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage", "clipboardWrite"],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["src/main-world.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "js": ["src/content.js", "src/sidebar.js", "src/lists-page.js"],
+      "css": ["src/content.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "action": {
+    "default_title": "Twitter Better List",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
