@@ -32,11 +32,13 @@
     starting: false,
     primary: null,
     container: null,
+    containerIsOwn: false,
     toolbar: null,
     rows: [],
     otherRows: [],
     favoritesOnly: false,
     activeTags: new Set(),
+    searchQuery: '',
     chipsSignature: '',
     observer: null,
     observerTarget: null,
@@ -47,8 +49,17 @@
     discoverHidden: new Set(),
     isScrolling: false,
     scrollTimer: null,
+    pageViewport: null,
+    pageViewportParent: null,
+    pageExpanded: false,
+    pageExpandHeight: 0,
+    pageBaseScrollHeight: 0,
+    pageExpandAt: 0,
+    reorderBlocked: false,
   };
 
+  const OWN_RE = /^(自分のリスト|Your lists?)$/i;
+  const GENERIC_LIST_RE = /^(リスト|Lists?)$/i;
   const DISCOVER_RE =
     /^(新しいリストを見つける|Discover new Lists?|New to Lists|Lists you might like|Find new lists)$/i;
 
@@ -92,6 +103,14 @@
 
   function normalizePageName(value) {
     return String(value || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase();
+  }
+
+  function normalizeSearchText(value) {
+    return String(value || '')
+      .normalize('NFKC')
       .replace(/\s+/g, ' ')
       .trim()
       .toLocaleLowerCase();
@@ -283,16 +302,19 @@
     return document.querySelector('[data-testid="primaryColumn"]');
   }
 
-  function findOwnScopeStart(container) {
+  function findHeaderByPattern(container, pattern) {
     if (!container) return null;
     const headers = Array.from(
       container.querySelectorAll('h1, h2, [role="heading"]')
-    ).filter((el) =>
-      /^(自分のリスト|リスト|Your lists?|Lists?)$/i.test(
-        (el.textContent || '').trim()
-      )
-    );
+    ).filter((el) => pattern.test((el.textContent || '').trim()));
     return headers.length ? headers[headers.length - 1] : null;
+  }
+
+  function findOwnScopeStart(container) {
+    return (
+      findHeaderByPattern(container, OWN_RE) ||
+      findHeaderByPattern(container, GENERIC_LIST_RE)
+    );
   }
 
   function findDiscoverHeader(container) {
@@ -335,7 +357,7 @@
           state.container,
           findOwnScopeStart(state.container)
         );
-        applyOrder();
+        applyOrder(true);
         renderToolbar();
       }
     });
@@ -425,6 +447,19 @@
     }
   }
 
+  function countFollowingRows(parent, header, cells) {
+    if (!parent || !header) return 0;
+    return cells.reduce((count, cell) => {
+      if (
+        cell.parentElement === parent &&
+        header.compareDocumentPosition(cell) & Node.DOCUMENT_POSITION_FOLLOWING
+      ) {
+        return count + 1;
+      }
+      return count;
+    }, 0);
+  }
+
   function findContainer(primary) {
     if (!primary) return null;
     const cells = Array.from(
@@ -438,15 +473,190 @@
       if (!parent) continue;
       counts.set(parent, (counts.get(parent) || 0) + 1);
     }
+
+    // The recommended section can mount more rows than the owner's section.
+    // Prefer the container that actually contains "Your lists" (or the page's
+    // generic "Lists" heading), otherwise the toolbar attaches to the
+    // recommendations and the real rows are left in native order.
     let best = null;
-    let bestCount = 0;
+    let bestScore = -1;
+    let bestCount = -1;
     for (const [parent, count] of counts) {
-      if (count > bestCount) {
+      const strictHeader = findHeaderByPattern(parent, OWN_RE);
+      const header = strictHeader || findHeaderByPattern(parent, GENERIC_LIST_RE);
+      const ownCount = countFollowingRows(parent, header, cells);
+      // A strict "Your lists" header is much stronger evidence than a generic
+      // "Lists" heading that may belong to the recommendations block.
+      const score = (strictHeader ? 1000 : 0) + ownCount;
+      if (
+        score > bestScore ||
+        (score === bestScore && count > bestCount)
+      ) {
         best = parent;
+        bestScore = score;
         bestCount = count;
       }
     }
     return best;
+  }
+
+  function backupElementStyle(el) {
+    if (!el || el.__tblPageViewportBackup != null) return;
+    el.__tblPageViewportBackup = el.getAttribute('style') || '';
+  }
+
+  function restoreElementStyle(el) {
+    if (!el || el.__tblPageViewportBackup == null) return;
+    const style = el.__tblPageViewportBackup;
+    if (style) el.setAttribute('style', style);
+    else el.removeAttribute('style');
+    delete el.__tblPageViewportBackup;
+  }
+
+  function elementDepth(el) {
+    let depth = 0;
+    while (el?.parentElement) {
+      depth += 1;
+      el = el.parentElement;
+    }
+    return depth;
+  }
+
+  function findPageViewport(primary, container) {
+    if (!primary || !container) return null;
+    const candidates = Array.from(
+      document.querySelectorAll('div[data-viewportview="true"]')
+    )
+      .filter((el) => el.contains(container) && el.clientHeight > 0)
+      .sort((a, b) => elementDepth(b) - elementDepth(a));
+    if (candidates.length) return candidates[0];
+
+    // Some X layouts do not mark the scroll element.  Fall back to the nearest
+    // scrollable ancestor, but never use the document itself.
+    let node = container.parentElement;
+    while (node && node !== document.body && node !== document.documentElement) {
+      const style = getComputedStyle(node);
+      if (
+        /(auto|scroll)/.test(style.overflowY) &&
+        node.clientHeight > 0 &&
+        node !== primary
+      ) {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function pageTargetHeight() {
+    const total = Math.max(state.rows.length, cachedTotalForPage(), 1);
+    const measured = state.rows
+      .map((row) => rowHeight(row.el))
+      .filter((height) => height > 0);
+    const rowHeightEstimate = measured.length
+      ? measured.reduce((sum, height) => sum + height, 0) / measured.length
+      : 88;
+    const base = state.pageBaseScrollHeight || 0;
+    return Math.min(
+      20000,
+      Math.max(
+        1600,
+        total * Math.max(64, rowHeightEstimate) + 900,
+        base + 600
+      )
+    );
+  }
+
+  function collapsePageViewport() {
+    if (state.pageViewport) {
+      state.pageViewport.removeAttribute('data-tbl-page-expanded');
+      restoreElementStyle(state.pageViewport);
+    }
+    if (state.pageViewportParent) {
+      restoreElementStyle(state.pageViewportParent);
+    }
+    state.pageViewport = null;
+    state.pageViewportParent = null;
+    state.pageExpanded = false;
+    state.pageExpandHeight = 0;
+    state.pageBaseScrollHeight = 0;
+  }
+
+  function ensurePageViewport(container) {
+    const primary = state.primary || findPrimary();
+    const viewport = findPageViewport(primary, container);
+    if (!viewport) {
+      if (state.pageViewport) collapsePageViewport();
+      return false;
+    }
+
+    if (state.pageViewport !== viewport) {
+      collapsePageViewport();
+      state.pageViewport = viewport;
+      state.pageViewportParent = viewport.parentElement || null;
+    }
+
+    if (!state.pageExpanded) {
+      state.pageBaseScrollHeight = Math.max(
+        state.pageBaseScrollHeight || 0,
+        viewport.scrollHeight || 0
+      );
+    }
+
+    const contentFits =
+      viewport.scrollHeight <= viewport.clientHeight + 120;
+    if (contentFits && state.rows.length <= 12) {
+      // No virtualization is active for a short list.  Mark it safe without
+      // changing the page geometry.
+      state.pageExpanded = true;
+      return true;
+    }
+
+    const height = Math.max(pageTargetHeight(), state.pageExpandHeight || 0);
+    if (
+      state.pageExpanded &&
+      viewport.clientHeight >= height - 80 &&
+      state.pageExpandHeight >= height - 80
+    ) {
+      return true;
+    }
+
+    backupElementStyle(viewport);
+    setStyle(viewport, 'height', `${height}px`);
+    setStyle(viewport, 'min-height', '0px');
+    setStyle(viewport, 'max-height', 'none');
+    setStyle(viewport, 'flex', `0 0 ${height}px`);
+    setStyle(viewport, 'overflow', 'visible');
+    setStyle(viewport, 'overflow-y', 'visible');
+    viewport.setAttribute('data-tbl-page-expanded', '1');
+
+    const parent = state.pageViewportParent;
+    if (
+      parent &&
+      parent !== viewport &&
+      parent !== document.documentElement
+    ) {
+      const parentOverflow = getComputedStyle(parent).overflowY;
+      if (parentOverflow === 'hidden' || parentOverflow === 'clip') {
+        backupElementStyle(parent);
+        setStyle(parent, 'overflow-y', 'auto');
+        setStyle(parent, 'overscroll-behavior', 'contain');
+      }
+    }
+
+    state.pageExpanded = true;
+    state.pageExpandHeight = height;
+
+    const now = Date.now();
+    if (now - state.pageExpandAt > 250) {
+      state.pageExpandAt = now;
+      // Make X's virtualizer notice the new viewport height.  The mutation
+      // observer then scans the newly mounted rows.
+      void viewport.offsetHeight;
+      window.dispatchEvent(new Event('resize'));
+      viewport.dispatchEvent(new Event('scroll'));
+    }
+    return true;
   }
 
   function insertToolbar(primary, container) {
@@ -533,7 +743,7 @@
       event.preventDefault();
       event.stopPropagation();
       state.favoritesOnly = !state.favoritesOnly;
-      applyOrder();
+      applyOrder(true);
       renderToolbar();
     });
 
@@ -554,7 +764,7 @@
         event.stopPropagation();
         TBL.state.settings.sortMode = mode;
         TBL.saveSettings();
-        applyOrder();
+        applyOrder(true);
         renderToolbar();
       });
       sorts.appendChild(button);
@@ -612,12 +822,62 @@
       event.preventDefault();
       event.stopPropagation();
       state.activeTags.clear();
-      applyOrder();
+      applyOrder(true);
       renderToolbar();
     });
 
     filters.append(filterLabel, chips, bulkRename, clear);
-    toolbar.append(main, filters);
+
+    const searchRow = document.createElement('div');
+    searchRow.className = 'tbl-search-row';
+    searchRow.dataset.tbl = 'search';
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'tbl-search-input';
+    searchInput.placeholder = TBL.t(
+      'リスト名・タグを検索',
+      'Search lists or tags'
+    );
+    searchInput.setAttribute(
+      'aria-label',
+      TBL.t('リスト名・タグを検索', 'Search lists or tags')
+    );
+    searchInput.autocomplete = 'off';
+    searchInput.spellcheck = false;
+
+    const clearSearch = createButton(
+      'tbl-filter-clear tbl-search-clear',
+      TBL.t('クリア', 'Clear'),
+      TBL.t('検索をクリア', 'Clear search')
+    );
+    clearSearch.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.searchQuery = '';
+      searchInput.value = '';
+      applyOrder(true);
+      renderToolbar();
+      searchInput.focus();
+    });
+
+    searchInput.addEventListener('input', () => {
+      state.searchQuery = searchInput.value;
+      applyOrder(true);
+      renderToolbar();
+    });
+    searchInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.searchQuery = '';
+      searchInput.value = '';
+      applyOrder(true);
+      renderToolbar();
+    });
+
+    searchRow.append(searchInput, clearSearch);
+    toolbar.append(main, filters, searchRow);
     return toolbar;
   }
 
@@ -758,25 +1018,37 @@
     return Object.keys(cache.lists).length;
   }
 
+  function rowMatchesSearch(row) {
+    const query = normalizeSearchText(state.searchQuery);
+    if (!query) return true;
+    const tags = row.id ? TBL.getListTags(row.id) : [];
+    const text = normalizeSearchText([row.name, ...tags].join(' '));
+    return query.split(' ').every((term) => text.includes(term));
+  }
+
   function rowMatches(row, favorites) {
     if (state.favoritesOnly && (!row.id || !favorites.has(row.id))) {
       return false;
     }
     if (state.activeTags.size > 0) {
-      if (!row.id) return false;
-      const keys = new Set(
-        TBL.getListTags(row.id).map((tag) => TBL.tagKey(tag))
-      );
-      let matched = false;
-      for (const key of state.activeTags) {
-        if (keys.has(key)) {
-          matched = true;
-          break;
+      // A virtual row whose ID has not been resolved yet must stay visible.
+      // Otherwise scrolling past it looks like the list was deleted until the
+      // next metadata scan fills in its ID.
+      if (row.id) {
+        const keys = new Set(
+          TBL.getListTags(row.id).map((tag) => TBL.tagKey(tag))
+        );
+        let matched = false;
+        for (const key of state.activeTags) {
+          if (keys.has(key)) {
+            matched = true;
+            break;
+          }
         }
+        if (!matched) return false;
       }
-      if (!matched) return false;
     }
-    return true;
+    return rowMatchesSearch(row);
   }
 
   function compareIds(a, b, direction) {
@@ -883,11 +1155,26 @@
     return { ownEl, delta };
   }
 
-  function applyOrder() {
+  function isLikelyVirtualized() {
+    if (!state.container || !state.rows.length) return false;
+    const mounted = state.rows.reduce(
+      (sum, row) => sum + rowHeight(row.el),
+      0
+    );
+    const content = Math.max(
+      state.container.scrollHeight || 0,
+      state.container.offsetHeight || 0
+    );
+    return content > mounted + 200;
+  }
+
+  function applyOrder(force = false) {
     if (!state.active || !state.container) return;
     // X is changing the mounted window during scrolling.  Re-sorting while
     // that happens makes rows visibly jump; wait until scrolling settles.
-    if (state.isScrolling) return;
+    // Once the page viewport has been expanded all rows stay mounted, so the
+    // sorted layout remains stable even while the user scrolls.
+    if (state.isScrolling && !state.pageExpanded && !force) return;
 
     const catalog = getPageTagCatalog();
     pruneActiveTags(catalog);
@@ -895,6 +1182,32 @@
     const visible = state.rows.filter((row) => rowMatches(row, favorites));
     const visibleSet = new Set(visible);
     const sorted = sortRows(visible, favorites);
+
+    // Reordering a virtualized window can move a row outside the range X is
+    // willing to keep mounted, which makes that list disappear while
+    // scrolling.  If the page viewport could not be expanded, keep the native
+    // row order and apply only filters/search.  This is deliberately a safe
+    // fallback; the normal path expands the viewport so sorting stays active.
+    const cachedTotal = cachedTotalForPage();
+    const allCachedRowsMounted =
+      cachedTotal === 0 || state.rows.length >= cachedTotal;
+    const canReorder =
+      !isLikelyVirtualized() ||
+      (state.pageExpanded && allCachedRowsMounted);
+    state.reorderBlocked = !canReorder;
+
+    for (const row of state.rows) {
+      const show = visibleSet.has(row);
+      row.el.classList.toggle('tbl-page-hidden', !show);
+      if (show) row.el.dataset.tblPageRow = '1';
+    }
+
+    if (!canReorder) {
+      for (const row of state.rows) setTopOffset(row.el, 0);
+      for (const child of state.otherRows) setTopOffset(child, 0);
+      return;
+    }
+
     const section = applySectionOffset(
       state.container,
       findOwnScopeStart(state.container)
@@ -905,12 +1218,6 @@
     for (const row of state.rows) {
       nativeTops.set(row.el, nativeTop(row.el, state.container));
       heights.set(row.el, rowHeight(row.el) || 72);
-    }
-
-    for (const row of state.rows) {
-      const show = visibleSet.has(row);
-      row.el.classList.toggle('tbl-page-hidden', !show);
-      if (show) row.el.dataset.tblPageRow = '1';
     }
 
     const baseTop = state.rows.length
@@ -965,7 +1272,7 @@
         if (!id) return;
         const favorite = favoritesSet().has(id);
         setFavorite(id, !favorite);
-        applyOrder();
+        applyOrder(true);
         renderToolbar();
       });
 
@@ -1072,7 +1379,7 @@
         event.stopPropagation();
         if (active.has(tag.key)) active.delete(tag.key);
         else active.add(tag.key);
-        applyOrder();
+        applyOrder(true);
         renderToolbar();
       });
       chips.appendChild(chip);
@@ -1082,6 +1389,15 @@
   function renderToolbar() {
     const toolbar = state.toolbar;
     if (!toolbar || !toolbar.isConnected) return;
+    const searchInput = toolbar.querySelector('.tbl-search-input');
+    const searchClear = toolbar.querySelector('.tbl-search-clear');
+    if (searchInput && searchInput.value !== state.searchQuery) {
+      searchInput.value = state.searchQuery;
+    }
+    if (searchClear) {
+      searchClear.style.display = state.searchQuery ? '' : 'none';
+    }
+
     const sortMode = TBL.state.settings.sortMode;
     toolbar.querySelectorAll('.tbl-sort-btn[data-sort]').forEach((button) => {
       const active = button.dataset.sort === sortMode;
@@ -1130,12 +1446,13 @@
       const visible = state.rows.filter((row) =>
         rowMatches(row, favorites)
       ).length;
+      const searchActive = Boolean(normalizeSearchText(state.searchQuery));
       let text = '';
       if (total === 0) {
         text = TBL.t('リストを読み込み中…', 'Loading lists…');
       } else if (state.favoritesOnly) {
         text = TBL.t(`★${visible}/${total}`, `★${visible} / ${total}`);
-      } else if (state.activeTags.size > 0) {
+      } else if (state.activeTags.size > 0 || searchActive) {
         // Keep the ↻ button with the count; a long label wraps it alone.
         text = TBL.t(`表示${visible}/${total}`, `${visible} / ${total}`);
       } else {
@@ -1144,7 +1461,14 @@
       if (favorites.size > 0 && !state.favoritesOnly) {
         text += TBL.t(` / ★${favorites.size}`, ` / ★${favorites.size}`);
       }
+      if (state.reorderBlocked) text += ' ※';
       if (status.textContent !== text) status.textContent = text;
+      status.title = state.reorderBlocked
+        ? TBL.t(
+            'Xの仮想スクロール画面のため、この画面では並び替えを一時停止しています',
+            'Sorting is paused because X is virtualizing this page'
+          )
+        : '';
     }
   }
 
@@ -1172,16 +1496,36 @@
 
     // X can render the recommended lists before the user's own list section.
     // If a section with more rows appears later, move the toolbar and rows to
-    // that section instead of staying stuck on the early skeleton.
+    // that section instead of staying stuck on the early skeleton.  Once this
+    // container is identified as "Your lists", do not switch away just
+    // because its heading scrolled out of the virtualized window and the
+    // recommendations block has more mounted rows.
+    const currentHasOwnHeader = Boolean(
+      findHeaderByPattern(state.container, OWN_RE)
+    );
+    if (currentHasOwnHeader) state.containerIsOwn = true;
+
     const best = findContainer(findPrimary());
-    if (best && best !== state.container) {
+    const bestHasOwnHeader = Boolean(
+      best && findHeaderByPattern(best, OWN_RE)
+    );
+    const shouldSwitch =
+      best &&
+      best !== state.container &&
+      (!state.containerIsOwn ||
+        bestHasOwnHeader ||
+        !state.container?.isConnected);
+
+    if (shouldSwitch) {
       for (const row of state.rows) resetPageRow(row.el);
       for (const child of state.otherRows) restoreStyle(child);
       restoreDiscover();
+      collapsePageViewport();
       state.discoverExpanded = false;
       state.rows = [];
       state.otherRows = [];
       state.container = null;
+      state.containerIsOwn = false;
       mount();
       return;
     }
@@ -1248,6 +1592,7 @@
 
     state.rows = rows;
     state.otherRows = children.filter((child) => !rowEls.has(child));
+    ensurePageViewport(container);
     ensureForeignDefaultTags(rows);
     for (const row of rows) ensureActions(row);
     applyOrder();
@@ -1335,6 +1680,7 @@
     state.primary = primary;
     if (!container) return;
     state.container = container;
+    state.containerIsOwn = Boolean(findHeaderByPattern(container, OWN_RE));
     if (!state.toolbar) state.toolbar = createToolbar();
     if (!state.toolbar.isConnected) {
       insertToolbar(primary, container);
@@ -1379,16 +1725,20 @@
     }
     for (const child of state.otherRows) restoreStyle(child);
     restoreDiscover();
+    collapsePageViewport();
     state.rows = [];
     state.otherRows = [];
     state.primary = null;
     state.container = null;
+    state.containerIsOwn = false;
     state.active = false;
     state.starting = false;
     state.favoritesOnly = false;
     state.discoverExpanded = false;
     state.activeTags.clear();
+    state.searchQuery = '';
     state.chipsSignature = '';
+    state.reorderBlocked = false;
   }
 
   function ensure() {

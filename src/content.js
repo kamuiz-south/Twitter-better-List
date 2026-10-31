@@ -36,6 +36,7 @@
     autoLoadAll: true,
     sidebarEnabled: true,
     hideDiscoverLists: false,
+    dialogSearch: false,
     language: 'auto',
   };
 
@@ -73,6 +74,7 @@
       loadedIds: new Set(),
       favoritesOnly: false,
       activeTags: new Set(),
+      searchQuery: '',
       expanded: false,
       preparing: false,
       prepareToken: 0,
@@ -238,6 +240,7 @@
     if (typeof next.hideDiscoverLists !== 'boolean') {
       next.hideDiscoverLists = false;
     }
+    if (typeof next.dialogSearch !== 'boolean') next.dialogSearch = false;
     return next;
   }
 
@@ -409,6 +412,34 @@
     }
   }
 
+  function normalizeSearchText(value) {
+    return String(value || '')
+      .normalize('NFKC')
+      .toLocaleLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function getRowSearchText(row) {
+    if (!row) return '';
+    const name = row.dataset.tblName || getRowName(row);
+    const id = row.dataset.tblListId ? String(row.dataset.tblListId) : '';
+    const tags = id ? getListTags(id) : [];
+    return normalizeSearchText([name, ...tags].join(' '));
+  }
+
+  function rowMatchesSearch(row) {
+    // The dialog search is optional; the own-lists page uses its own search
+    // state in lists-page.js.  Keeping this setting check here means turning
+    // the option off immediately stops filtering, even before the toolbar
+    // refreshes.
+    if (!state.settings.dialogSearch) return true;
+    const query = normalizeSearchText(state.modal.searchQuery);
+    if (!query) return true;
+    const text = getRowSearchText(row);
+    return query.split(' ').every((term) => text.includes(term));
+  }
+
   function rowMatchesFilters(row) {
     if (!row) return false;
     const id = row.dataset.tblListId ? String(row.dataset.tblListId) : '';
@@ -416,18 +447,22 @@
       return false;
     }
     if (state.modal.activeTags?.size > 0) {
-      if (!id) return false;
-      const keys = new Set(getListTags(id).map((tag) => tagKey(tag)));
-      let matched = false;
-      for (const key of state.modal.activeTags) {
-        if (keys.has(key)) {
-          matched = true;
-          break;
+      // A freshly mounted virtual row may not have an ID yet.  Hiding it
+      // makes the list disappear until X's metadata arrives; keep it visible
+      // instead and let the later scan apply the tag once the ID is known.
+      if (id) {
+        const keys = new Set(getListTags(id).map((tag) => tagKey(tag)));
+        let matched = false;
+        for (const key of state.modal.activeTags) {
+          if (keys.has(key)) {
+            matched = true;
+            break;
+          }
         }
+        if (!matched) return false;
       }
-      if (!matched) return false;
     }
-    return true;
+    return rowMatchesSearch(row);
   }
 
   function getCacheForViewer(viewerId = getViewerId()) {
@@ -1697,6 +1732,7 @@
     state.modal.loadedIds = new Set();
     state.modal.favoritesOnly = false;
     state.modal.activeTags = new Set();
+    state.modal.searchQuery = '';
     state.modal.expanded = false;
     state.modal.preparing = false;
     state.modal.expansionFailed = false;
@@ -1859,6 +1895,7 @@
       state.modal.loadedIds = new Set();
       state.modal.favoritesOnly = false;
       state.modal.activeTags = new Set();
+      state.modal.searchQuery = '';
       state.modal.expanded = false;
       state.modal.preparing = false;
       state.modal.expansionFailed = false;
@@ -2736,16 +2773,84 @@
     });
 
     filters.append(filterLabel, chips, bulkRename, clear);
-    toolbar.append(main, filters);
+
+    const searchRow = document.createElement('div');
+    searchRow.className = 'tbl-search-row';
+    searchRow.dataset.tbl = 'search';
+
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.className = 'tbl-search-input';
+    searchInput.placeholder = t('リスト名・タグを検索', 'Search lists or tags');
+    searchInput.setAttribute(
+      'aria-label',
+      t('リスト名・タグを検索', 'Search lists or tags')
+    );
+    searchInput.autocomplete = 'off';
+    searchInput.spellcheck = false;
+
+    const clearSearch = document.createElement('button');
+    clearSearch.type = 'button';
+    clearSearch.className = 'tbl-filter-clear tbl-search-clear';
+    clearSearch.textContent = t('クリア', 'Clear');
+    clearSearch.title = t('検索をクリア', 'Clear search');
+    clearSearch.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      state.modal.searchQuery = '';
+      searchInput.value = '';
+      applyOrder(state.modal.rows);
+      updateToolbar();
+      searchInput.focus();
+    });
+
+    searchInput.addEventListener('input', () => {
+      state.modal.searchQuery = searchInput.value;
+      applyOrder(state.modal.rows);
+      updateToolbar();
+    });
+    searchInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      state.modal.searchQuery = '';
+      searchInput.value = '';
+      applyOrder(state.modal.rows);
+      updateToolbar();
+    });
+
+    searchRow.append(searchInput, clearSearch);
+    toolbar.append(main, filters, searchRow);
 
     state.modal.toolbar = toolbar;
     placeToolbar(dialog, container);
     updateToolbar();
   }
 
+  function syncSearchControls(toolbar) {
+    if (!toolbar) return;
+    const row = toolbar.querySelector('.tbl-search-row');
+    const input = toolbar.querySelector('.tbl-search-input');
+    const clear = toolbar.querySelector('.tbl-search-clear');
+    if (!row || !input) return;
+    const visible = state.settings.dialogSearch === true;
+    row.style.display = visible ? '' : 'none';
+    if (!visible) {
+      // Do not keep an invisible filter active when the option is off.
+      state.modal.searchQuery = '';
+    }
+    if (input.value !== state.modal.searchQuery) {
+      input.value = state.modal.searchQuery;
+    }
+    if (clear) {
+      clear.style.display = state.modal.searchQuery ? '' : 'none';
+    }
+  }
+
   function updateToolbar() {
     const toolbar = state.modal.toolbar;
     if (!toolbar || !toolbar.isConnected) return;
+    syncSearchControls(toolbar);
     const sortMode = state.settings.sortMode;
     toolbar.querySelectorAll('.tbl-sort-btn[data-sort]').forEach((btn) => {
       btn.classList.toggle('is-active', btn.dataset.sort === sortMode);
@@ -2795,8 +2900,13 @@
         getCachedListCount()
       );
       const favorites = getFavoriteIds().length;
+      const searchActive = Boolean(
+        state.settings.dialogSearch && normalizeSearchText(state.modal.searchQuery)
+      );
       const filtersActive =
-        state.modal.favoritesOnly || state.modal.activeTags.size > 0;
+        state.modal.favoritesOnly ||
+        state.modal.activeTags.size > 0 ||
+        searchActive;
       const visible = filtersActive
         ? state.modal.rows.filter((row) => rowMatchesFilters(row)).length
         : rows;
@@ -2826,7 +2936,7 @@
         }
       } else if (state.modal.favoritesOnly) {
         text = t(`★${visible}/${rows}`, `★${visible} / ${rows}`);
-      } else if (state.modal.activeTags.size > 0) {
+      } else if (state.modal.activeTags.size > 0 || searchActive) {
         // Keep this compact: the native dialog is narrow, and a long
         // "表示n件 / 全n件" label used to push the ↻ button onto its own line.
         text = t(`表示${visible}/${rows}`, `${visible} / ${rows}`);

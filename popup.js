@@ -12,6 +12,7 @@
     autoLoadAll: true,
     sidebarEnabled: true,
     hideDiscoverLists: false,
+    dialogSearch: false,
     language: 'auto',
   };
 
@@ -21,6 +22,7 @@
     autoLoad: document.getElementById('auto-load'),
     sidebarEnabled: document.getElementById('sidebar-enabled'),
     hideDiscover: document.getElementById('hide-discover'),
+    dialogSearch: document.getElementById('dialog-search'),
     cacheMeta: document.getElementById('cache-meta'),
     clearCache: document.getElementById('clear-cache'),
     openX: document.getElementById('open-x'),
@@ -29,6 +31,7 @@
     exportBackup: document.getElementById('export-backup'),
     importBackup: document.getElementById('import-backup'),
     viewer: document.getElementById('viewer'),
+    version: document.getElementById('version'),
   };
 
   let state = {
@@ -69,6 +72,7 @@
     if (typeof next.hideDiscoverLists !== 'boolean') {
       next.hideDiscoverLists = false;
     }
+    if (typeof next.dialogSearch !== 'boolean') next.dialogSearch = false;
     return next;
   }
 
@@ -114,6 +118,7 @@
     el.autoLoad.checked = settings.autoLoadAll !== false;
     el.sidebarEnabled.checked = settings.sidebarEnabled !== false;
     el.hideDiscover.checked = settings.hideDiscoverLists === true;
+    el.dialogSearch.checked = settings.dialogSearch === true;
   }
 
   function renderCacheMeta() {
@@ -188,6 +193,7 @@
       autoLoadAll: raw.autoLoadAll,
       sidebarEnabled: raw.sidebarEnabled,
       hideDiscoverLists: raw.hideDiscoverLists,
+      dialogSearch: raw.dialogSearch,
       language: ['auto', 'ja', 'en'].includes(raw.language)
         ? raw.language
         : 'auto',
@@ -292,6 +298,11 @@
       setSettings(state.settings);
     });
 
+    el.dialogSearch.addEventListener('change', () => {
+      state.settings.dialogSearch = el.dialogSearch.checked;
+      setSettings(state.settings);
+    });
+
     el.clearCache.addEventListener('click', async () => {
       if (!confirm('リストのキャッシュを消去します。お気に入り設定は残ります。よろしいですか？')) {
         return;
@@ -345,6 +356,7 @@
         'autoLoadAll',
         'sidebarEnabled',
         'hideDiscoverLists',
+        'dialogSearch',
         'language',
       ];
       if (
@@ -389,6 +401,9 @@
   }
 
   async function boot() {
+    if (el.version) {
+      el.version.textContent = `v${chrome.runtime.getManifest().version}`;
+    }
     const stored = await storageGet(['settings', 'listCache', 'meta']);
     state.settings = normalizeSettings(stored.settings);
     state.cache = stored.listCache && typeof stored.listCache === 'object' ? stored.listCache : {};

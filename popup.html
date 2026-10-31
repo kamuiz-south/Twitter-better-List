@@ -34,6 +34,17 @@
       </section>
 
       <section class="card">
+        <h2>検索</h2>
+        <label class="row">
+          <span>追加/削除画面に検索欄を表示</span>
+          <input type="checkbox" id="dialog-search" />
+        </label>
+        <p class="hint">
+          自分のリスト一覧ページでは常に表示されます。追加/削除画面では初期設定でオフです。
+        </p>
+      </section>
+
+      <section class="card">
         <h2>サイドバー</h2>
         <label class="row">
           <span>「More」を展開する（投稿ボタンの上に項目を表示）</span>
@@ -95,7 +106,7 @@
 
     <footer class="footer">
       <span id="viewer">アカウント未検出</span>
-      <span class="version">v0.1.0</span>
+      <span class="version" id="version">v1.0.0</span>
     </footer>
 
     <script src="popup.js"></script>

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Twitter Better List",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "X (Twitter) のリスト追加/削除画面とリスト一覧を並び替え・お気に入り・タグ対応にし、左メニューの「More」を展開します。",
   "minimum_chrome_version": "111",
   "permissions": ["storage", "clipboardWrite"],
