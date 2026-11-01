@@ -55,6 +55,7 @@
     pageExpandHeight: 0,
     pageBaseScrollHeight: 0,
     pageExpandAt: 0,
+    pageFitsContent: false,
     reorderBlocked: false,
   };
 
@@ -580,6 +581,7 @@
     state.pageExpanded = false;
     state.pageExpandHeight = 0;
     state.pageBaseScrollHeight = 0;
+    state.pageFitsContent = false;
   }
 
   function ensurePageViewport(container) {
@@ -609,6 +611,7 @@
       // No virtualization is active for a short list.  Mark it safe without
       // changing the page geometry.
       state.pageExpanded = true;
+      state.pageFitsContent = true;
       return true;
     }
 
@@ -618,6 +621,8 @@
       viewport.clientHeight >= height - 80 &&
       state.pageExpandHeight >= height - 80
     ) {
+      state.pageFitsContent =
+        viewport.scrollHeight <= viewport.clientHeight + 120;
       return true;
     }
 
@@ -646,6 +651,8 @@
 
     state.pageExpanded = true;
     state.pageExpandHeight = height;
+    state.pageFitsContent =
+      viewport.scrollHeight <= viewport.clientHeight + 120;
 
     const now = Date.now();
     if (now - state.pageExpandAt > 250) {
@@ -1193,7 +1200,9 @@
       cachedTotal === 0 || state.rows.length >= cachedTotal;
     const canReorder =
       !isLikelyVirtualized() ||
-      (state.pageExpanded && allCachedRowsMounted);
+      (state.pageExpanded &&
+        state.pageFitsContent &&
+        allCachedRowsMounted);
     state.reorderBlocked = !canReorder;
 
     for (const row of state.rows) {
