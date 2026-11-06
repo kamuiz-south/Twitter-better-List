@@ -30,7 +30,6 @@
     backupStatus: document.getElementById('backup-status'),
     exportBackup: document.getElementById('export-backup'),
     importBackup: document.getElementById('import-backup'),
-    viewer: document.getElementById('viewer'),
     version: document.getElementById('version'),
   };
 
@@ -124,12 +123,10 @@
   function renderCacheMeta() {
     const viewerId = getViewerId();
     if (!viewerId) {
-      el.viewer.textContent = 'アカウント未検出';
       el.cacheMeta.textContent =
         'X でリスト追加画面を一度開くと、アカウントとリスト情報を取得します。';
       return;
     }
-    el.viewer.textContent = `viewer: ${viewerId}`;
     const cache = getCacheForViewer();
     if (!cache) {
       el.cacheMeta.textContent = 'リストデータはまだありません。';

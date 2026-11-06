@@ -8,7 +8,14 @@
   </head>
   <body>
     <header class="header">
-      <div class="logo" aria-hidden="true">BL</div>
+      <img
+        class="logo"
+        src="icons/icon128.png"
+        alt=""
+        width="34"
+        height="34"
+        aria-hidden="true"
+      />
       <div>
         <h1>Twitter Better List</h1>
         <p class="sub">リスト追加画面の並び替えとお気に入り</p>
@@ -34,13 +41,13 @@
       </section>
 
       <section class="card">
-        <h2>検索</h2>
+        <h2>リストから追加/削除</h2>
         <label class="row">
-          <span>追加/削除画面に検索欄を表示</span>
+          <span>検索欄を表示</span>
           <input type="checkbox" id="dialog-search" />
         </label>
         <p class="hint">
-          自分のリスト一覧ページでは常に表示されます。追加/削除画面では初期設定でオフです。
+          自分のリスト一覧ページでは常に表示されます。初期設定ではオフです。
         </p>
       </section>
 
@@ -105,8 +112,7 @@
     </main>
 
     <footer class="footer">
-      <span id="viewer">アカウント未検出</span>
-      <span class="version" id="version">v1.1.0</span>
+      <span class="version" id="version">v1.1.1</span>
     </footer>
 
     <script src="popup.js"></script>
