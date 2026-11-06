@@ -33,6 +33,7 @@
     primary: null,
     container: null,
     containerIsOwn: false,
+    pageHandle: '',
     toolbar: null,
     rows: [],
     otherRows: [],
@@ -56,7 +57,15 @@
     pageBaseScrollHeight: 0,
     pageExpandAt: 0,
     pageFitsContent: false,
+    lastScrollTop: 0,
     reorderBlocked: false,
+    sectionOffsetApplied: false,
+    sectionOffsetDirty: true,
+    sectionOffsetDelta: 0,
+    sectionOffsetContainer: null,
+    sectionOffsetExpanded: null,
+    sectionOffsetHide: null,
+    discoverMode: '',
   };
 
   const OWN_RE = /^(自分のリスト|Your lists?)$/i;
@@ -117,13 +126,32 @@
       .toLocaleLowerCase();
   }
 
+  function extractNodeTextWithEmoji(node) {
+    if (!node) return '';
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      if (node.tagName === 'IMG') {
+        const alt = node.getAttribute('alt');
+        if (alt) return alt;
+      }
+      let out = '';
+      for (const child of node.childNodes) {
+        out += extractNodeTextWithEmoji(child);
+      }
+      return out;
+    }
+    return '';
+  }
+
   function getRowName(el) {
     const cell = el?.querySelector('[data-testid="listCell"]') || el;
     if (!cell) return '';
     const label = cell.querySelector('[dir="ltr"]');
-    const text = label?.textContent?.trim();
-    if (text) return text;
-    return (cell.innerText || '').split('\n')[0].trim();
+    if (label) {
+      const text = extractNodeTextWithEmoji(label).trim();
+      if (text) return text;
+    }
+    return extractNodeTextWithEmoji(cell).split('\n')[0].trim();
   }
 
   function getRowMemberCount(el) {
@@ -199,6 +227,28 @@
     };
   }
 
+  function extractListIdFromRow(el) {
+    if (!el) return null;
+    const link =
+      (el.matches?.('a[href]') ? el : null) ||
+      el.querySelector?.('a[href*="/lists/"], [role="link"][href*="/lists/"]') ||
+      el.closest?.('a[href*="/lists/"]');
+    if (link) {
+      const href = link.getAttribute('href') || link.href || '';
+      const match = href.match(/\/lists\/(\d+)(?:[/?#]|$)/);
+      if (match) return match[1];
+    }
+    const allLinks = el.querySelectorAll?.('a[href]');
+    if (allLinks) {
+      for (const a of allLinks) {
+        const href = a.getAttribute('href') || a.href || '';
+        const match = href.match(/\/lists\/(\d+)(?:[/?#]|$)/);
+        if (match) return match[1];
+      }
+    }
+    return null;
+  }
+
   function resolveRowMeta(el, cell) {
     let fiberMeta = null;
     try {
@@ -214,6 +264,17 @@
         ownerId:
           fiberMeta.ownerId == null ? null : String(fiberMeta.ownerId),
         createdAt: Number(fiberMeta.createdAt) || 0,
+      };
+    }
+
+    const domId = extractListIdFromRow(el) || extractListIdFromRow(cell);
+    if (domId) {
+      const cached = TBL.getCachedList?.(domId);
+      return {
+        id: domId,
+        name: name || cached?.name || '',
+        ownerId: cached?.ownerId == null ? null : String(cached.ownerId),
+        createdAt: Number(cached?.createdAt) || 0,
       };
     }
 
@@ -311,6 +372,79 @@
     return headers.length ? headers[headers.length - 1] : null;
   }
 
+  function getViewerHandle() {
+    try {
+      const link = document.querySelector(
+        'a[data-testid="AppTabBar_Profile_Link"]'
+      );
+      const href = link?.getAttribute('href') || link?.href || '';
+      const match = href.match(/^\/([^/?#]+)/);
+      if (match) return decodeURIComponent(match[1]).toLowerCase();
+      const switcher = document.querySelector(
+        '[data-testid="SideNav_AccountSwitcher_Button"]'
+      );
+      const text = switcher?.innerText || '';
+      const handle = text.match(/@([A-Za-z0-9_]+)/);
+      if (handle) return handle[1].toLowerCase();
+    } catch {
+      /* ignore */
+    }
+    return '';
+  }
+
+  function isOwnPageByUrl() {
+    const info = pathInfo();
+    if (!info?.handle) return null;
+    // ListsManagementPageTimeline is only requested for the signed-in
+    // viewer's own page.  MAIN world reports that request immediately, which
+    // lets us classify the page before the sidebar/profile link or pin
+    // buttons have rendered.  Without this, the first scan can treat the
+    // recommendation section as a public lists page and move its rows.
+    const ownPath = String(
+      TBL.state?.ownListsPagePath ||
+        document.documentElement?.dataset?.tblOwnListsPath ||
+        ''
+    )
+      .replace(/\/+$/, '')
+      .toLowerCase();
+    const currentPath = location.pathname.replace(/\/+$/, '').toLowerCase();
+    if (ownPath && ownPath === currentPath) {
+      return true;
+    }
+    const viewer = getViewerHandle();
+    if (!viewer) return null;
+    return info.handle.toLowerCase() === viewer;
+  }
+
+  function looksLikeOwnListsPage(container) {
+    // Fallback for the first scan, before the profile link / pin buttons are
+    // rendered and before MAIN's signal reaches the isolated world.
+    // A public page may share the "Your lists" heading, but the discover
+    // section precedes the owner's own-list heading on the owner's page.
+    const discoverHeader = findDiscoverHeader(container);
+    const ownHeader = findHeaderByPattern(container, OWN_RE);
+    if (!discoverHeader || !ownHeader) return false;
+    return Boolean(
+      ownHeader.compareDocumentPosition(discoverHeader) &
+        Node.DOCUMENT_POSITION_PRECEDING
+    );
+  }
+
+  function isOwnContainer(container) {
+    if (!container) return false;
+    // X uses the localized "自分のリスト" heading on other users' public list
+    // pages too, so a heading match cannot distinguish them.  Compare the URL
+    // handle with the signed-in account instead.
+    const byUrl = isOwnPageByUrl();
+    if (byUrl !== null) return byUrl;
+    if (looksLikeOwnListsPage(container)) return true;
+    // If the navigation/profile link has not rendered yet, the native pin
+    // button is still a reliable own-page signal.
+    return Boolean(
+      container.querySelector('button[data-testid="list-icon-button"]')
+    );
+  }
+
   function findOwnScopeStart(container) {
     return (
       findHeaderByPattern(container, OWN_RE) ||
@@ -366,6 +500,9 @@
   }
 
   function restoreDiscover() {
+    if (state.container) {
+      state.container.classList.remove('tbl-discover-collapsed');
+    }
     const hidden = new Set([
       ...state.discoverHidden,
       ...document.querySelectorAll('.tbl-page-discover-hidden'),
@@ -373,79 +510,43 @@
     for (const el of hidden) {
       el.classList.remove('tbl-page-discover-hidden');
     }
+    document.querySelectorAll('.tbl-discover-header-row').forEach((el) => {
+      el.classList.remove('tbl-discover-header-row');
+    });
     state.discoverHidden.clear();
     removeDiscoverToggle();
+  }
+
+  function resetSectionOffsetState() {
+    state.sectionOffsetApplied = false;
+    state.sectionOffsetDirty = true;
+    state.sectionOffsetDelta = 0;
+    state.sectionOffsetContainer = null;
+    state.sectionOffsetExpanded = null;
+    state.sectionOffsetHide = null;
+    state.discoverMode = '';
   }
 
   function applyDiscoverSection(container, ownScope) {
     if (!container) return;
     const hide = Boolean(TBL.state.settings.hideDiscoverLists);
     if (hide) {
-      state.discoverExpanded = false;
+      // When hideDiscoverLists is ON (default), the recommendation module is
+      // completely filtered out from the GraphQL response in MAIN world before React renders it.
+      // No discover rows exist in X's virtualizer, completely eliminating both the flash
+      // when scrolling to top (Home key) and the scroll jump (row 35 → 16).
       removeDiscoverToggle();
-    }
-    if (!ownScope) return;
-
-    const header = findDiscoverHeader(container);
-    if (!header) {
-      // The list page is virtualized; while the recommendation section is not
-      // mounted there is nothing to collapse. Keep the current state.
+      container.classList.remove('tbl-discover-collapsed');
       return;
     }
-    const start = topLevelChild(container, header);
-    const end = topLevelChild(container, ownScope);
-    if (!start || !end || start === end) return;
 
-    const children = Array.from(container.children).filter(
-      (child) => child.nodeType === 1
-    );
-    const from = children.indexOf(start);
-    const to = children.indexOf(end);
-    if (from < 0 || to <= from) return;
-
-    const range = new Set(children.slice(from, to));
-    for (const el of Array.from(state.discoverHidden)) {
-      if (range.has(el)) continue;
-      el.classList.remove('tbl-page-discover-hidden');
-      state.discoverHidden.delete(el);
-    }
-
-    if (hide) {
-      removeDiscoverToggle();
-    } else {
-      if (!state.discoverToggle) {
-        state.discoverToggle = createDiscoverToggle();
-      }
-      const toggle = state.discoverToggle;
-      if (
-        toggle.parentElement !== container ||
-        toggle.nextElementSibling !== start
-      ) {
-        container.insertBefore(toggle, start);
-      }
-      const toggleLabel = state.discoverExpanded
-        ? TBL.t('− 新しいリストを見つける', '− Discover new lists')
-        : TBL.t('＋ 新しいリストを見つける', '＋ Discover new lists');
-      if (toggle.textContent !== toggleLabel) {
-        toggle.textContent = toggleLabel;
-      }
-      const expanded = state.discoverExpanded ? 'true' : 'false';
-      if (toggle.getAttribute('aria-expanded') !== expanded) {
-        toggle.setAttribute('aria-expanded', expanded);
-      }
-    }
-
-    if (!hide && state.discoverExpanded) {
-      for (const el of range) {
-        el.classList.remove('tbl-page-discover-hidden');
-        state.discoverHidden.delete(el);
-      }
-    } else {
-      for (const el of range) {
-        el.classList.add('tbl-page-discover-hidden');
-        state.discoverHidden.add(el);
-      }
-    }
+    // When the option is OFF, do not hide or collapse recommendations.
+    // Leaving them in their native layout keeps X's virtualizer coordinates 100% in sync,
+    // which prevents scroll jumps.  Also clear any hidden classes left behind
+    // by an older build or a setting change, otherwise the section stays
+    // invisible until X remounts the virtualized rows while scrolling.
+    restoreDiscover();
+    clearDiscoverSection(container);
   }
 
   function countFollowingRows(parent, header, cells) {
@@ -550,7 +651,12 @@
   }
 
   function pageTargetHeight() {
-    const total = Math.max(state.rows.length, cachedTotalForPage(), 1);
+    const total = Math.max(
+      state.rows.length,
+      cachedTotalForPage(),
+      cachedOwnedCount(),
+      1
+    );
     const measured = state.rows
       .map((row) => rowHeight(row.el))
       .filter((height) => height > 0);
@@ -585,6 +691,12 @@
   }
 
   function ensurePageViewport(container) {
+    if (state.containerIsOwn) {
+      // Own lists are sorted in the GraphQL response, so leave X's native
+      // virtualizer geometry untouched.
+      if (state.pageViewport) collapsePageViewport();
+      return false;
+    }
     const primary = state.primary || findPrimary();
     const viewport = findPageViewport(primary, container);
     if (!viewport) {
@@ -769,8 +881,11 @@
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
+        if (TBL.state.settings.sortMode === mode) return;
         TBL.state.settings.sortMode = mode;
         TBL.saveSettings();
+        // MAIN world updates X's timeline store directly, so no page reload
+        // is needed.  applyOrder() only refreshes our filters/toolbar.
         applyOrder(true);
         renderToolbar();
       });
@@ -783,11 +898,19 @@
     const refresh = createButton(
       'tbl-refresh-btn',
       '↻',
-      TBL.t('リストを再スキャン', 'Rescan lists')
+      TBL.t('リストを再読み込み', 'Reload lists')
     );
     refresh.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (state.containerIsOwn) {
+        if (typeof TBL.refreshPage === 'function') {
+          TBL.refreshPage();
+        } else {
+          scan();
+        }
+        return;
+      }
       scan();
     });
 
@@ -842,13 +965,10 @@
     const searchInput = document.createElement('input');
     searchInput.type = 'search';
     searchInput.className = 'tbl-search-input';
-    searchInput.placeholder = TBL.t(
-      'リスト名・タグを検索',
-      'Search lists or tags'
-    );
+    searchInput.placeholder = TBL.t('リスト名で検索', 'Search list names');
     searchInput.setAttribute(
       'aria-label',
-      TBL.t('リスト名・タグを検索', 'Search lists or tags')
+      TBL.t('リスト名で検索', 'Search list names')
     );
     searchInput.autocomplete = 'off';
     searchInput.spellcheck = false;
@@ -890,8 +1010,17 @@
 
   function getPageTagCatalog() {
     const catalog = new Map();
-    for (const row of state.rows) {
-      for (const value of TBL.getListTags(row.id)) {
+    const idSet = new Set(state.rows.map((row) => row.id).filter(Boolean));
+    if (state.containerIsOwn) {
+      // The own page is virtualized, so state.rows only covers the mounted
+      // part.  Use the complete viewer cache for the chip list/counts, while
+      // keeping mounted foreign (followed) lists visible.
+      for (const item of cachedOwnedEntries()) {
+        if (item?.id != null) idSet.add(String(item.id));
+      }
+    }
+    for (const id of idSet) {
+      for (const value of TBL.getListTags(id)) {
         const tag = TBL.normalizeTag(value);
         const key = TBL.tagKey(tag);
         if (!tag || !key) continue;
@@ -989,6 +1118,10 @@
 
   function pruneActiveTags(catalog) {
     if (!state.activeTags.size) return;
+    // While the own page is partially mounted, the visible tag set changes as
+    // the user scrolls.  Do not clear an active filter just because all rows
+    // carrying that tag are temporarily unmounted.
+    if (state.containerIsOwn && state.rows.length < cachedOwnedCount()) return;
     const valid = new Set(catalog.map((tag) => tag.key));
     for (const key of Array.from(state.activeTags)) {
       if (!valid.has(key)) state.activeTags.delete(key);
@@ -1005,14 +1138,41 @@
    * actually match cached names; otherwise the toolbar would show e.g. "40"
    * next to a page with five public lists.
    */
-  function cachedTotalForPage() {
-    if (!state.rows.length) return 0;
+  function cachedOwnedEntries() {
     const cache = TBL.getCacheForViewer?.();
-    if (!cache?.lists) return 0;
+    if (!cache?.lists) return [];
+    const pageIds = Array.isArray(cache.pageListIds)
+      ? new Set(cache.pageListIds.map((id) => String(id)))
+      : null;
+    if (pageIds && pageIds.size > 0) {
+      // The lists page also contains followed lists owned by other users.
+      // pageListIds is written only from ListsManagementPageTimeline, so use
+      // it instead of filtering by owner (which dropped followed lists).
+      return Object.entries(cache.lists)
+        .filter(([id]) => pageIds.has(String(id)))
+        .map(([, item]) => item)
+        .filter(Boolean);
+    }
+    // Backwards compatibility for caches written before pageListIds existed.
+    // The page query replaces this cache on the next load.
+    const viewerId = TBL.getViewerId?.();
+    return Object.values(cache.lists).filter((item) => {
+      if (!item) return false;
+      if (!viewerId || !item.ownerId) return true;
+      return String(item.ownerId) === String(viewerId);
+    });
+  }
+
+  function cachedOwnedCount() {
+    if (!state.containerIsOwn) return 0;
+    return cachedOwnedEntries().length;
+  }
+
+  function cachedTotalForPage() {
+    if (!state.rows.length || !state.containerIsOwn) return 0;
+    const entries = cachedOwnedEntries();
     const cachedNames = new Set(
-      Object.values(cache.lists)
-        .map((item) => normalizePageName(item?.name))
-        .filter(Boolean)
+      entries.map((item) => normalizePageName(item?.name)).filter(Boolean)
     );
     if (!cachedNames.size) return 0;
     let recognized = 0;
@@ -1022,14 +1182,13 @@
     if (recognized < Math.max(1, Math.ceil(state.rows.length * 0.8))) {
       return 0;
     }
-    return Object.keys(cache.lists).length;
+    return entries.length;
   }
 
   function rowMatchesSearch(row) {
     const query = normalizeSearchText(state.searchQuery);
     if (!query) return true;
-    const tags = row.id ? TBL.getListTags(row.id) : [];
-    const text = normalizeSearchText([row.name, ...tags].join(' '));
+    const text = normalizeSearchText(row.name);
     return query.split(' ').every((term) => text.includes(term));
   }
 
@@ -1104,75 +1263,44 @@
   }
 
   /*
-   * Collapse/expand the recommended-list section by shifting the section
-   * with `top` offsets, not by rewriting row transforms.  The rows keep their
-   * native transform for X's virtualizer and stay in its mounted window.
+   * Recommended-list visibility is handled in MAIN world by removing X's
+   * discover module from ListsManagementPageTimeline before React renders.
+   * The remaining rows keep their native geometry, so no section offset is
+   * needed on any lists page.  Recalculating offsets here caused the hidden
+   * section's height to change while scrolling (the 35 -> 16 jump).
    */
   function applySectionOffset(container, ownScope) {
     if (!container) return { ownEl: null, delta: 0 };
     const ownEl = ownScope ? topLevelChild(container, ownScope) : null;
-    const header = findDiscoverHeader(container);
-    const startEl = header ? topLevelChild(container, header) : null;
-    const toggle = state.discoverToggle;
-
-    if (!header) {
-      if (toggle) removeDiscoverToggle();
-      if (ownEl) setTopOffset(ownEl, 0);
-      return { ownEl, delta: 0 };
-    }
-
-    if (toggle && toggle.parentElement === container) {
-      setStyle(toggle, 'position', 'absolute');
-      setStyle(toggle, 'left', '0px');
-      setStyle(toggle, 'top', '0px');
-      setStyle(toggle, 'width', '100%');
-      setStyle(toggle, 'z-index', '2');
-    }
-
-    if (!ownEl || !startEl) return { ownEl, delta: 0 };
-
-    const ownY = nativeTop(ownEl, container);
-    const startY = nativeTop(startEl, container);
-    let delta = 0;
-    if (toggle) {
-      const toggleHeight = rowHeight(toggle) || 38;
-      delta = state.discoverExpanded
-        ? toggleHeight - startY
-        : toggleHeight - ownY;
-    } else {
-      // The recommendations are completely hidden by the setting.
-      delta = -ownY;
-    }
-
-    setTopOffset(ownEl, delta);
-
-    const children = Array.from(container.children).filter(
-      (child) => child.nodeType === 1
-    );
-    const from = children.indexOf(startEl);
-    const to = children.indexOf(ownEl);
-    if (from >= 0 && to > from) {
-      for (const child of children.slice(from, to)) {
-        // When expanded, move the recommendations below the toggle.  When
-        // collapsed, their CSS display:none means their old offset is
-        // irrelevant, so restore it.
-        setTopOffset(child, state.discoverExpanded ? delta : 0);
-      }
-    }
-    return { ownEl, delta };
+    if (ownEl) setTopOffset(ownEl, 0);
+    return { ownEl, delta: 0 };
   }
 
   function isLikelyVirtualized() {
     if (!state.container || !state.rows.length) return false;
-    const mounted = state.rows.reduce(
-      (sum, row) => sum + rowHeight(row.el),
-      0
-    );
-    const content = Math.max(
-      state.container.scrollHeight || 0,
-      state.container.offsetHeight || 0
-    );
-    return content > mounted + 200;
+
+    // The viewer cache knows how many owned lists should exist.  If only a
+    // subset is mounted, X is virtualizing the section even when the whole
+    // container also contains recommendations or other sections.
+    const cachedTotal = Math.max(cachedTotalForPage(), cachedOwnedCount());
+    if (cachedTotal > 0 && state.rows.length >= cachedTotal) return false;
+    if (cachedTotal > state.rows.length + 1) return true;
+
+    // With no usable cache total, measure the mounted rows themselves.  A
+    // virtualized section spreads native tops over a much taller span than the
+    // sum of the mounted row heights; a fully mounted list stays contiguous.
+    // Hidden rows (search/tag filter) have height 0, so use an estimate for
+    // them or every active filter would look like a virtualized window.
+    const rows = state.rows.map((row) => ({
+      top: nativeTop(row.el, state.container),
+      height: rowHeight(row.el) || 72,
+    }));
+    if (!rows.length) return false;
+    const minTop = Math.min(...rows.map((row) => row.top));
+    const maxBottom = Math.max(...rows.map((row) => row.top + row.height));
+    const span = maxBottom - minTop;
+    const mounted = rows.reduce((sum, row) => sum + row.height, 0);
+    return span > mounted + 200;
   }
 
   function applyOrder(force = false) {
@@ -1181,7 +1309,14 @@
     // that happens makes rows visibly jump; wait until scrolling settles.
     // Once the page viewport has been expanded all rows stay mounted, so the
     // sorted layout remains stable even while the user scrolls.
-    if (state.isScrolling && !state.pageExpanded && !force) return;
+    if (
+      state.isScrolling &&
+      !state.pageExpanded &&
+      !state.containerIsOwn &&
+      !force
+    ) {
+      return;
+    }
 
     const catalog = getPageTagCatalog();
     pruneActiveTags(catalog);
@@ -1190,12 +1325,42 @@
     const visibleSet = new Set(visible);
     const sorted = sortRows(visible, favorites);
 
+    for (const row of state.rows) {
+      const show = visibleSet.has(row);
+      row.el.classList.toggle('tbl-page-hidden', !show);
+      if (show) row.el.dataset.tblPageRow = '1';
+    }
+
+    if (state.containerIsOwn) {
+      // MAIN world sorts X's timeline store, so native rows keep their own
+      // transforms and virtualization.  The recommendation section offset is
+      // applied once and then locked; recalculating it while scrolling was
+      // what caused the visible jump near the middle of long lists.
+      // During scrolling, skip applySectionOffset entirely to prevent any
+      // layout-affecting DOM changes that could shift the scroll position.
+      state.reorderBlocked = false;
+      if (!state.isScrolling) {
+        applySectionOffset(
+          state.container,
+          findOwnScopeStart(state.container)
+        );
+      }
+      for (const row of state.rows) setTopOffset(row.el, 0);
+      // If the page was briefly treated as a public list page before the
+      // viewer handle became available, the public reorder path may have left
+      // offsets/filter classes on the recommendation rows.  Clear them even
+      // while scrolling: waiting for the scroll to settle leaves the section
+      // physically moved out of view until X remounts it.
+      restoreRecommendationRows();
+      return;
+    }
+
     // Reordering a virtualized window can move a row outside the range X is
     // willing to keep mounted, which makes that list disappear while
     // scrolling.  If the page viewport could not be expanded, keep the native
     // row order and apply only filters/search.  This is deliberately a safe
     // fallback; the normal path expands the viewport so sorting stays active.
-    const cachedTotal = cachedTotalForPage();
+    const cachedTotal = Math.max(cachedTotalForPage(), cachedOwnedCount());
     const allCachedRowsMounted =
       cachedTotal === 0 || state.rows.length >= cachedTotal;
     const canReorder =
@@ -1204,12 +1369,6 @@
         state.pageFitsContent &&
         allCachedRowsMounted);
     state.reorderBlocked = !canReorder;
-
-    for (const row of state.rows) {
-      const show = visibleSet.has(row);
-      row.el.classList.toggle('tbl-page-hidden', !show);
-      if (show) row.el.dataset.tblPageRow = '1';
-    }
 
     if (!canReorder) {
       for (const row of state.rows) setTopOffset(row.el, 0);
@@ -1325,9 +1484,10 @@
       star.classList.toggle('is-favorite', favorite);
       const starLabel = favorite ? '★' : '☆';
       if (star.textContent !== starLabel) star.textContent = starLabel;
-      star.title = favorite
+      const starTitle = favorite
         ? TBL.t('お気に入りから外す', 'Remove from favorites')
         : TBL.t('お気に入りに追加', 'Add to favorites');
+      star.title = starTitle;
     }
   }
 
@@ -1450,9 +1610,33 @@
       // X's virtualizer only mounts the visible rows.  On the viewer's own
       // page, use the cache populated by ListsManagementPageTimeline for the
       // total instead of reporting the currently mounted row count.
-      const total = Math.max(state.rows.length, cachedTotalForPage());
+      const total = Math.max(
+        state.rows.length,
+        cachedTotalForPage(),
+        cachedOwnedCount()
+      );
       const favorites = favoritesSet();
-      const visible = state.rows.filter((row) =>
+      let statusRows = state.rows;
+      if (state.containerIsOwn) {
+        const byId = new Map();
+        for (const item of cachedOwnedEntries()) {
+          const id = item?.id == null ? '' : String(item.id);
+          if (!id) continue;
+          byId.set(id, {
+            id,
+            name: item?.name || '',
+            ownerId: item?.ownerId == null ? null : String(item.ownerId),
+            createdAt: Number(item?.createdAt) || 0,
+          });
+        }
+        // Include mounted rows as well (foreign/followed lists are not in the
+        // viewer-owned cache).
+        for (const row of state.rows) {
+          if (row.id && !byId.has(row.id)) byId.set(row.id, row);
+        }
+        if (byId.size) statusRows = Array.from(byId.values());
+      }
+      const visible = statusRows.filter((row) =>
         rowMatches(row, favorites)
       ).length;
       const searchActive = Boolean(normalizeSearchText(state.searchQuery));
@@ -1474,10 +1658,64 @@
       if (status.textContent !== text) status.textContent = text;
       status.title = state.reorderBlocked
         ? TBL.t(
-            'Xの仮想スクロール画面のため、この画面では並び替えを一時停止しています',
-            'Sorting is paused because X is virtualizing this page'
+            `Xの仮想スクロール画面のため、この画面では並び替えを一時停止しています（展開:${state.pageExpanded ? 'あり' : 'なし'} / 行:${state.rows.length} / 所有:${cachedOwnedCount()}）`,
+            `Sorting is paused because X is virtualizing this page (expanded:${state.pageExpanded ? 'yes' : 'no'} / rows:${state.rows.length} / owned:${cachedOwnedCount()})`
           )
         : '';
+    }
+  }
+
+  function clearMovedRecommendationRow(el) {
+    if (!el) return;
+    const hasHidden =
+      el.classList.contains('tbl-page-hidden') ||
+      el.classList.contains('tbl-page-discover-hidden') ||
+      el.classList.contains('tbl-discover-header-row');
+    const moved = el.style.top && el.style.top !== '0px';
+    if (!hasHidden && !moved) return;
+    // The public reorder path can leave these values behind when the page was
+    // briefly classified as a public list page.  Recommendation rows must
+    // always use X's native geometry when the option is off.
+    el.classList.remove(
+      'tbl-page-hidden',
+      'tbl-page-discover-hidden',
+      'tbl-discover-header-row'
+    );
+    setTopOffset(el, 0);
+  }
+
+  function restoreRecommendationRows() {
+    if (TBL.state.settings.hideDiscoverLists) return;
+    for (const child of state.otherRows) clearMovedRecommendationRow(child);
+    // During the transition from the public layout, the recommendation rows
+    // can still be in state.rows until the next full scan.  Own rows always
+    // have a native pin button, so clearing only the unpinned rows is safe.
+    for (const row of state.rows) {
+      if (row.el.querySelector('button[data-testid="list-icon-button"]')) {
+        continue;
+      }
+      clearMovedRecommendationRow(row.el);
+    }
+    clearDiscoverSection(state.container);
+  }
+
+  function clearDiscoverSection(container) {
+    if (TBL.state.settings.hideDiscoverLists) return;
+    if (!container) return;
+    const discoverHeader = findDiscoverHeader(container);
+    if (!discoverHeader) return;
+    const start = topLevelChild(container, discoverHeader);
+    if (!start) return;
+    const ownScope = findOwnScopeStart(container);
+    const ownEl = ownScope ? topLevelChild(container, ownScope) : null;
+    let el = start;
+    while (el) {
+      clearMovedRecommendationRow(el);
+      if (el === ownEl) break;
+      // The owner's own rows have a native pin button.  Stop before touching
+      // them even if the own heading is temporarily unmounted.
+      if (el.querySelector('button[data-testid="list-icon-button"]')) break;
+      el = el.nextElementSibling;
     }
   }
 
@@ -1503,38 +1741,49 @@
       return;
     }
 
+    // On the own page, X's virtualizer remounts rows during scrolling.
+    // Defer the full scan while actively scrolling between rows, BUT allow it
+    // immediately when near the top (e.g. after pressing Home or scrolling to top)
+    // so the collapsed recommendation section does not flash before being hidden.
+    const nearTop = state.lastScrollTop <= 120;
+    if (state.containerIsOwn && state.isScrolling && !nearTop) {
+      // Do not re-sort while scrolling, but still undo any stale geometry
+      // left on the recommendation section by an earlier misclassification.
+      restoreRecommendationRows();
+      return;
+    }
+
     // X can render the recommended lists before the user's own list section.
     // If a section with more rows appears later, move the toolbar and rows to
     // that section instead of staying stuck on the early skeleton.  Once this
     // container is identified as "Your lists", do not switch away just
     // because its heading scrolled out of the virtualized window and the
     // recommendations block has more mounted rows.
-    const currentHasOwnHeader = Boolean(
-      findHeaderByPattern(state.container, OWN_RE)
-    );
-    if (currentHasOwnHeader) state.containerIsOwn = true;
+    const byUrl = isOwnPageByUrl();
+    const currentIsOwn = isOwnContainer(state.container);
+    if (byUrl !== null) state.containerIsOwn = byUrl;
+    else if (currentIsOwn) state.containerIsOwn = true;
 
     const best = findContainer(findPrimary());
-    const bestHasOwnHeader = Boolean(
-      best && findHeaderByPattern(best, OWN_RE)
-    );
+    const bestIsOwn = isOwnContainer(best);
     const shouldSwitch =
       best &&
       best !== state.container &&
-      (!state.containerIsOwn ||
-        bestHasOwnHeader ||
-        !state.container?.isConnected);
+      (!state.container?.isConnected ||
+        (!state.containerIsOwn && bestIsOwn));
 
     if (shouldSwitch) {
       for (const row of state.rows) resetPageRow(row.el);
       for (const child of state.otherRows) restoreStyle(child);
       restoreDiscover();
+      resetSectionOffsetState();
       collapsePageViewport();
       state.discoverExpanded = false;
       state.rows = [];
       state.otherRows = [];
+      const wasOwn = state.containerIsOwn || bestIsOwn;
       state.container = null;
-      state.containerIsOwn = false;
+      state.containerIsOwn = wasOwn;
       mount();
       return;
     }
@@ -1553,7 +1802,10 @@
     // the actual "Your lists" section.  Keep those recommendations untouched
     // and apply sorting/filtering only to the user's own rows.
     const ownScope = findOwnScopeStart(container);
-    applyDiscoverSection(container, ownScope);
+    // On the own page, apply discover section changes when settled or near the top.
+    if (!state.containerIsOwn || !state.isScrolling || nearTop) {
+      applyDiscoverSection(container, ownScope);
+    }
     if (ownScope) {
       const scoped = listEls.filter(
         (el) =>
@@ -1561,6 +1813,18 @@
           Node.DOCUMENT_POSITION_FOLLOWING
       );
       if (scoped.length > 0) listEls = scoped;
+    } else if (state.containerIsOwn) {
+      // While the ownScope header is temporarily unmounted during scrolling,
+      // distinguish own list rows from recommendation rows by the native pin
+      // button.  If no own row has mounted yet, do not fall back to treating
+      // the recommendation rows as own: sorting them here is what moved the
+      // section out of view until X remounted it.
+      const scoped = listEls.filter((el) =>
+        el.querySelector('button[data-testid="list-icon-button"]')
+      );
+      if (scoped.length > 0 || findDiscoverHeader(container)) {
+        listEls = scoped;
+      }
     }
 
     const rowEls = new Set(listEls);
@@ -1689,7 +1953,12 @@
     state.primary = primary;
     if (!container) return;
     state.container = container;
-    state.containerIsOwn = Boolean(findHeaderByPattern(container, OWN_RE));
+    const byUrl = isOwnPageByUrl();
+    if (byUrl !== null) {
+      state.containerIsOwn = byUrl;
+    } else if (!state.containerIsOwn) {
+      state.containerIsOwn = isOwnContainer(container);
+    }
     if (!state.toolbar) state.toolbar = createToolbar();
     if (!state.toolbar.isConnected) {
       insertToolbar(primary, container);
@@ -1734,6 +2003,7 @@
     }
     for (const child of state.otherRows) restoreStyle(child);
     restoreDiscover();
+    resetSectionOffsetState();
     collapsePageViewport();
     state.rows = [];
     state.otherRows = [];
@@ -1755,6 +2025,13 @@
     if (!shouldRun(info)) {
       teardown();
       return;
+    }
+    // Do not carry the "own list" mode across an SPA navigation to another
+    // user's public lists page.  The own header can be unmounted while
+    // scrolling, so the URL handle is the reliable boundary between pages.
+    if (state.pageHandle !== info.handle) {
+      state.pageHandle = info.handle;
+      state.containerIsOwn = false;
     }
     if (state.active) {
       if (!state.container?.isConnected) mount();
@@ -1793,9 +2070,14 @@
   window.addEventListener('hashchange', ensure);
   window.addEventListener(
     'scroll',
-    () => {
+    (event) => {
       if (!state.active) return;
       state.isScrolling = true;
+      const target = event.target;
+      state.lastScrollTop =
+        target === document || target === window
+          ? window.scrollY || document.documentElement.scrollTop || 0
+          : target?.scrollTop || 0;
       if (state.scrollTimer) clearTimeout(state.scrollTimer);
       state.scrollTimer = setTimeout(() => {
         state.scrollTimer = null;

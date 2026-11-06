@@ -11,7 +11,7 @@
     favoritesFirst: true,
     autoLoadAll: true,
     sidebarEnabled: true,
-    hideDiscoverLists: false,
+    hideDiscoverLists: true,
     dialogSearch: false,
     language: 'auto',
   };
@@ -70,7 +70,7 @@
     if (typeof next.autoLoadAll !== 'boolean') next.autoLoadAll = true;
     if (typeof next.sidebarEnabled !== 'boolean') next.sidebarEnabled = true;
     if (typeof next.hideDiscoverLists !== 'boolean') {
-      next.hideDiscoverLists = false;
+      next.hideDiscoverLists = true;
     }
     if (typeof next.dialogSearch !== 'boolean') next.dialogSearch = false;
     return next;

@@ -35,7 +35,7 @@
     favoritesFirst: true,
     autoLoadAll: true,
     sidebarEnabled: true,
-    hideDiscoverLists: false,
+    hideDiscoverLists: true,
     dialogSearch: false,
     language: 'auto',
   };
@@ -83,6 +83,9 @@
       headerEl: null,
       styledEls: new Set(),
       originalContainerStyle: null,
+      layoutSignature: '',
+      appliedHeight: 0,
+      appliedViewportHeight: 0,
     },
     scanTimer: null,
     cacheSaveTimer: null,
@@ -90,6 +93,9 @@
     lastPath: location.pathname,
     storageLoaded: false,
     storageLoading: null,
+    lastPageSortHideDiscover: null,
+    pageSortReloadTimer: null,
+    ownListsPagePath: '',
   };
 
   const TBL = (window.__TBL__ = window.__TBL__ || {});
@@ -238,7 +244,7 @@
     if (typeof next.autoLoadAll !== 'boolean') next.autoLoadAll = true;
     if (typeof next.sidebarEnabled !== 'boolean') next.sidebarEnabled = true;
     if (typeof next.hideDiscoverLists !== 'boolean') {
-      next.hideDiscoverLists = false;
+      next.hideDiscoverLists = true;
     }
     if (typeof next.dialogSearch !== 'boolean') next.dialogSearch = false;
     return next;
@@ -276,6 +282,7 @@
       state.meta.viewerId = next;
       saveMeta();
     }
+    writePageSortConfig();
     if (previous !== next) {
       try {
         window.dispatchEvent(
@@ -289,6 +296,7 @@
       // 汚染されたキーで保存済みのキャッシュ・お気に入り・タグを
       // 正しい閲覧者キーへ寄せる。
       migrateViewerCaches();
+      writePageSortConfig();
     }
     return next;
   }
@@ -422,10 +430,7 @@
 
   function getRowSearchText(row) {
     if (!row) return '';
-    const name = row.dataset.tblName || getRowName(row);
-    const id = row.dataset.tblListId ? String(row.dataset.tblListId) : '';
-    const tags = id ? getListTags(id) : [];
-    return normalizeSearchText([name, ...tags].join(' '));
+    return normalizeSearchText(row.dataset.tblName || getRowName(row));
   }
 
   function rowMatchesSearch(row) {
@@ -577,11 +582,13 @@
             state.meta = result.meta && typeof result.meta === 'object' ? result.meta : {};
             if (result.settings?.debug) state.settings.debug = true;
             state.storageLoaded = true;
+            writePageSortConfig();
             resolve();
           }
         );
       } catch {
         state.storageLoaded = true;
+        writePageSortConfig();
         resolve();
       }
     }).finally(() => {
@@ -596,6 +603,66 @@
     } catch {
       /* ignore */
     }
+    writePageSortConfig();
+  }
+
+  /*
+   * The MAIN world cannot read chrome.storage.  Send it just enough sorting
+   * state so it can sort ListsManagementPageTimeline before React renders it.
+   */
+  function writePageSortConfig() {
+    // MAIN must never receive the in-memory defaults before chrome.storage has
+    // been read.  The default is "hide recommendations", and sending it during
+    // the short boot race could filter X's first ListsManagementPageTimeline
+    // response even when the user has turned the option off.  The storage
+    // callback itself calls this function, so the real value is sent as soon
+    // as it is available.
+    if (!state.storageLoaded) return;
+    const hideDiscoverLists = Boolean(state.settings.hideDiscoverLists);
+    const previousHide = state.lastPageSortHideDiscover;
+    state.lastPageSortHideDiscover = hideDiscoverLists;
+    sendToMain('set-page-sort', {
+      mode: state.settings.sortMode,
+      favoritesFirst: Boolean(state.settings.favoritesFirst),
+      favorites: getFavoriteIds(),
+      hideDiscoverLists,
+    });
+
+    // If ON was active in this page, the recommendation module may already be
+    // gone from X's timeline store.  Turning it off cannot restore that module
+    // without a native refetch, so reload once (this also covers a tab that
+    // was frozen and missed chrome.storage.onChanged).
+    if (
+      previousHide === true &&
+      !hideDiscoverLists &&
+      !state.pageSortReloadTimer &&
+      /^\/[^/]+\/lists\/?$/i.test(location.pathname)
+    ) {
+      toast(
+        t(
+          'おすすめリストを表示するため再読み込みします…',
+          'Reloading to show recommended lists…'
+        ),
+        'info'
+      );
+      state.pageSortReloadTimer = setTimeout(() => {
+        state.pageSortReloadTimer = null;
+        location.reload();
+      }, 220);
+    }
+  }
+
+  function refreshPage() {
+    if (!/^\/[^/]+\/lists\/?$/i.test(location.pathname)) return;
+    try {
+      toast(
+        t('リストを更新しています…', 'Refreshing lists…'),
+        'info'
+      );
+    } catch {
+      /* ignore */
+    }
+    sendToMain('refresh-lists-page', {});
   }
 
   function queueCacheSave() {
@@ -928,7 +995,7 @@
     viewerId,
     items,
     targetUserId = null,
-    { preserveForeign = false } = {}
+    { preserveForeign = false, pageLists = false } = {}
   ) {
     if (!viewerId || !Array.isArray(items)) return;
     const now = Date.now();
@@ -972,6 +1039,11 @@
       updatedAt: now,
       lists,
     };
+    // ListsManagementPageTimeline is authoritative for /<viewer>/lists and
+    // includes lists owned by other users that the viewer follows.  Keep the
+    // exact page membership separate from dialog-only cache entries so the
+    // own page can count/tag every row, including followed lists.
+    if (pageLists) next.pageListIds = Object.keys(lists);
     markCacheViewer(next, viewerId);
     state.cache[viewerId] = next;
     queueCacheSave();
@@ -1136,6 +1208,37 @@
           break;
         }
 
+        case 'own-lists-page': {
+          const path = String(payload.path || '').replace(/\/+$/, '');
+          if (path) state.ownListsPagePath = path;
+          break;
+        }
+
+        case 'page-refresh-result': {
+          toast(
+            payload.ok
+              ? t(
+                  `リストを更新しました（${payload.count || 0}件）`,
+                  `Lists refreshed (${payload.count || 0} items)`
+                )
+              : t(
+                  `リストを更新できませんでした: ${payload.error || '不明なエラー'}`,
+                  `Could not refresh lists: ${payload.error || 'unknown error'}`
+                ),
+            payload.ok ? 'success' : 'error'
+          );
+          if (payload.ok) {
+            try {
+              window.dispatchEvent(
+                new CustomEvent('tbl-list-page-refreshed', { detail: payload })
+              );
+            } catch {
+              /* ignore */
+            }
+          }
+          break;
+        }
+
         default:
           break;
       }
@@ -1185,7 +1288,7 @@
       payload.source === 'ListsManagementPageTimeline' &&
       items.length > 0
     ) {
-      replaceLists(getViewerId(), items, targetUserId);
+      replaceLists(getViewerId(), items, targetUserId, { pageLists: true });
     } else {
       mergeLists(getViewerId(), items, targetUserId);
     }
@@ -1739,6 +1842,9 @@
     state.modal.scrollParent = null;
     state.modal.headerEl = null;
     state.modal.styledEls = new Set();
+    state.modal.layoutSignature = '';
+    state.modal.appliedHeight = 0;
+    state.modal.appliedViewportHeight = 0;
 
     // ルートから userId を取得（URL が最も確実）。
     // 前回ダイアログの対象を引きずらないよう、いったんクリアする。
@@ -1902,6 +2008,9 @@
       state.modal.scrollParent = null;
       state.modal.headerEl = null;
       state.modal.styledEls = new Set();
+      state.modal.layoutSignature = '';
+      state.modal.appliedHeight = 0;
+      state.modal.appliedViewportHeight = 0;
       state.modal.userId = null;
       if (clearPending) state.pendingByUser = {};
     }
@@ -2781,10 +2890,10 @@
     const searchInput = document.createElement('input');
     searchInput.type = 'search';
     searchInput.className = 'tbl-search-input';
-    searchInput.placeholder = t('リスト名・タグを検索', 'Search lists or tags');
+    searchInput.placeholder = t('リスト名で検索', 'Search list names');
     searchInput.setAttribute(
       'aria-label',
-      t('リスト名・タグを検索', 'Search lists or tags')
+      t('リスト名で検索', 'Search list names')
     );
     searchInput.autocomplete = 'off';
     searchInput.spellcheck = false;
@@ -3148,9 +3257,29 @@
     return direction * (indexA - indexB);
   }
 
+  function currentModalLayoutSignature() {
+    return [
+      state.settings.sortMode,
+      state.settings.favoritesFirst ? '1' : '0',
+      state.modal.favoritesOnly ? '1' : '0',
+      Array.from(state.modal.activeTags || []).sort().join(','),
+      state.modal.searchQuery || '',
+    ].join('|');
+  }
+
   function applyOrder(rows) {
     if (!rows || rows.length === 0) return;
     pruneActiveTags();
+    // A sort/filter change should be allowed to shrink the dialog again.
+    // Rendering the same layout while scrolling must not, because the
+    // virtualizer briefly changes how many rows are mounted and recalculating
+    // the absolute height made the scrollbar thumb length fluctuate.
+    const layoutSignature = currentModalLayoutSignature();
+    if (layoutSignature !== state.modal.layoutSignature) {
+      state.modal.layoutSignature = layoutSignature;
+      state.modal.appliedHeight = 0;
+      state.modal.appliedViewportHeight = 0;
+    }
     const visibleRows = [];
     for (const row of rows) {
       if (rowMatchesFilters(row)) {
@@ -3236,6 +3365,19 @@
     );
   }
 
+  function applyModalContentHeight(container, contentHeight) {
+    const next = Math.max(0, Number(contentHeight) || 0);
+    const height = state.modal.expanded
+      ? Math.max(next, state.modal.appliedHeight || 0)
+      : next;
+    if (height <= 0) return;
+    state.modal.appliedHeight = height;
+    setInline(container, 'height', `${height}px`);
+    setInline(container, 'min-height', `${height}px`);
+    setInline(container, 'max-height', `${height}px`);
+    fitExpandedViewport();
+  }
+
   function applyAbsoluteOrder(container, sortedRows) {
     const rowSet = new Set(sortedRows);
     const children = Array.from(container.children).filter(
@@ -3267,10 +3409,7 @@
         setInline(child, 'transform', `translateY(${top}px)`);
         top += Math.max(0, child.offsetHeight);
       }
-      setInline(container, 'height', `${top}px`);
-      setInline(container, 'min-height', `${top}px`);
-      setInline(container, 'max-height', `${top}px`);
-      fitExpandedViewport();
+      applyModalContentHeight(container, top);
       return;
     }
 
@@ -3314,12 +3453,7 @@
     // X's virtualizer uses a large spacer element.  Once all rows are mounted
     // we know the real height, so collapse the spacer and remove the dead
     // space below the last row.
-    if (top > 0) {
-      setInline(container, 'height', `${top}px`);
-      setInline(container, 'min-height', `${top}px`);
-      setInline(container, 'max-height', `${top}px`);
-      fitExpandedViewport();
-    }
+    applyModalContentHeight(container, top);
   }
 
   function fitExpandedViewport() {
@@ -3338,8 +3472,12 @@
     try {
       const scRect = sc.getBoundingClientRect();
       const section = container.closest('section');
+      // Measure from the top of the scroll content, not from the current
+      // scroll position.  Without adding scrollTop, scrolling the dialog
+      // upward made the calculated height grow and changed the scrollbar
+      // thumb length.
       const sectionTop = section
-        ? section.getBoundingClientRect().top - scRect.top
+        ? section.getBoundingClientRect().top - scRect.top + (sc.scrollTop || 0)
         : 0;
       const containerTop = section
         ? container.getBoundingClientRect().top -
@@ -3347,7 +3485,12 @@
         : container.getBoundingClientRect().top - scRect.top;
       const content =
         sectionTop + containerTop + Math.max(0, container.offsetHeight) + 12;
-      const height = Math.max(640, Math.ceil(content));
+      const next = Math.max(640, Math.ceil(content));
+      // Do not shrink while the virtualizer remounts rows during scrolling.
+      // Otherwise the thumb length visibly changes near the favorites
+      // boundary.  A sort/filter change resets this value above.
+      const height = Math.max(next, state.modal.appliedViewportHeight || 0);
+      state.modal.appliedViewportHeight = height;
       setInline(sc, 'height', `${height}px`);
       setInline(sc, 'flex', `0 0 ${height}px`);
     } catch {
@@ -3396,6 +3539,9 @@
       const sc = findScrollContainer(dialog, container);
       if (!sc) return false;
       state.modal.scrollEl = sc;
+      // Re-expansion is a fresh layout; allow the height to be measured again.
+      state.modal.appliedHeight = 0;
+      state.modal.appliedViewportHeight = 0;
 
       // Small lists already fit without expansion; still allow sorting.
       if (count <= 12 && sc.scrollHeight <= sc.clientHeight + 120) {
@@ -3879,6 +4025,9 @@
     state.observer = new MutationObserver(() => {
       if (location.pathname !== state.lastPath) {
         state.lastPath = location.pathname;
+        // A long-lived tab may have missed a storage change while frozen.
+        // Re-read the real settings before X requests the new page data.
+        syncSettingsFromStorage();
         if (!isListModalRoute()) cleanupModal();
       }
       if (isListModalRoute()) scanModalSoon();
@@ -3896,6 +4045,7 @@
     setInterval(() => {
       if (location.pathname !== state.lastPath) {
         state.lastPath = location.pathname;
+        syncSettingsFromStorage();
         if (isListModalRoute()) scanModalSoon();
         else cleanupModal();
       }
@@ -3910,11 +4060,40 @@
         applyOrder(state.modal.rows);
       }
     }, 800);
+
+    // Background tabs can be frozen and miss chrome.storage.onChanged.  When
+    // the tab becomes active again, make sure MAIN has the latest values
+    // before the user navigates to a lists page.
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) syncSettingsFromStorage();
+    });
+    window.addEventListener('focus', syncSettingsFromStorage);
+    window.addEventListener('pageshow', syncSettingsFromStorage);
   }
 
   /* ------------------------------------------------------------------ */
   /* settings sync                                                      */
   /* ------------------------------------------------------------------ */
+
+  /*
+   * A long-lived tab can miss chrome.storage.onChanged while it is frozen.
+   * Resending the in-memory settings is not enough in that case: the memory is
+   * exactly what is stale.  Re-read the settings before notifying MAIN so an
+   * OFF -> ON/OFF change made in another tab is applied to the next page load.
+   */
+  function syncSettingsFromStorage() {
+    try {
+      chrome.storage.local.get(['settings'], (result) => {
+        if (result?.settings) {
+          state.settings = normalizeSettings(result.settings);
+        }
+        writePageSortConfig();
+        if (state.modal.active) refreshAllRows();
+      });
+    } catch {
+      writePageSortConfig();
+    }
+  }
 
   function watchStorage() {
     try {
@@ -3922,6 +4101,9 @@
         if (area !== 'local') return;
         if (changes.settings) {
           state.settings = normalizeSettings(changes.settings.newValue);
+          // writePageSortConfig handles the OFF reload when the recommendation
+          // module may already have been removed from X's store.
+          writePageSortConfig();
           if (state.modal.active) refreshAllRows();
         }
         if (changes.listCache && changes.listCache.newValue) {
@@ -3972,6 +4154,7 @@
     saveSettings,
     loadStorage,
     normalizeSettings,
+    refreshPage,
     DEFAULT_SETTINGS,
     scanModalSoon,
   });
@@ -3983,6 +4166,7 @@
   async function boot() {
     await loadStorage();
     state.viewerId = getViewerId();
+    writePageSortConfig();
     migrateViewerCaches();
     if (state.viewerId && state.meta.viewerId !== state.viewerId) {
       state.meta.viewerId = state.viewerId;

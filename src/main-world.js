@@ -59,6 +59,11 @@
     requestTemplates: {}, // { [operationName]: template }
     lastListQuery: null,
     lastEmitAt: 0,
+    pageSortConfig: null,
+    // Set when X actually requests ListsManagementPageTimeline.  Public list
+    // pages use CombinedLists, so this is a reliable early own-page signal
+    // even before the sidebar/profile link has rendered.
+    ownListsTimelinePath: '',
   };
 
   const originalFetch = window.fetch;
@@ -579,6 +584,647 @@
     return { items, nextCursor: null, terminated: true };
   }
 
+  /*
+   * The own lists page is virtualized by X, so moving native rows with CSS
+   * offsets makes rows jump/disappear while scrolling.  Instead, reorder the
+   * GraphQL response before React renders it.  X then lays out the sorted rows
+   * natively and its virtualizer keeps working exactly as before.
+   */
+  const DEFAULT_PAGE_SORT_CONFIG = {
+    mode: 'newest',
+    favoritesFirst: true,
+    favorites: [],
+    hideDiscoverLists: true,
+  };
+
+  function normalizePageSortConfig(value) {
+    const parsed = value && typeof value === 'object' ? value : {};
+    return {
+      mode: ['name', 'newest', 'oldest'].includes(parsed.mode)
+        ? parsed.mode
+        : DEFAULT_PAGE_SORT_CONFIG.mode,
+      favoritesFirst:
+        typeof parsed.favoritesFirst === 'boolean'
+          ? parsed.favoritesFirst
+          : DEFAULT_PAGE_SORT_CONFIG.favoritesFirst,
+      favorites: Array.isArray(parsed.favorites)
+        ? parsed.favorites.map((id) => String(id))
+        : [],
+      hideDiscoverLists:
+        typeof parsed.hideDiscoverLists === 'boolean'
+          ? parsed.hideDiscoverLists
+          : DEFAULT_PAGE_SORT_CONFIG.hideDiscoverLists,
+    };
+  }
+
+  async function readPageSortConfigForResponse() {
+    // The isolated world reads chrome.storage asynchronously at document_start.
+    // Wait long enough for the user's actual hideDiscoverLists setting to
+    // arrive before filtering the response.  If it never arrives, do NOT hide
+    // recommendations (falling back to the default ON here would make an OFF
+    // setting look broken on slow starts).
+    const started = Date.now();
+    while (!state.pageSortConfig && Date.now() - started < 1200) {
+      await sleep(10);
+    }
+    return (
+      state.pageSortConfig || {
+        ...DEFAULT_PAGE_SORT_CONFIG,
+        hideDiscoverLists: false,
+      }
+    );
+  }
+
+  function readViewerScreenNameFromDom() {
+    try {
+      const link = document.querySelector(
+        'a[data-testid="AppTabBar_Profile_Link"]'
+      );
+      const href = link?.getAttribute('href') || link?.href || '';
+      const match = href.match(/^\/([^/?#]+)/);
+      if (match) return decodeURIComponent(match[1]).toLowerCase();
+      const switcher = document.querySelector(
+        '[data-testid="SideNav_AccountSwitcher_Button"]'
+      );
+      const text = switcher?.innerText || '';
+      const handle = text.match(/@([A-Za-z0-9_]+)/);
+      if (handle) return handle[1].toLowerCase();
+    } catch {
+      /* ignore */
+    }
+    return '';
+  }
+
+  function isOwnListsPage() {
+    const match = location.pathname.match(/^\/([^/]+)\/lists\/?$/i);
+    if (!match) return false;
+    const handle = decodeURIComponent(match[1]).toLowerCase();
+    const viewer = readViewerScreenNameFromDom();
+    if (viewer) return handle === viewer;
+    // X only requests ListsManagementPageTimeline for the signed-in user's
+    // own lists page (public pages use CombinedLists).  This signal is
+    // available as soon as the request is sent, before the sidebar renders.
+    const normalizePath = (value) =>
+      String(value || '').replace(/\/+$/, '').toLowerCase();
+    if (
+      state.ownListsTimelinePath &&
+      normalizePath(state.ownListsTimelinePath) === normalizePath(location.pathname)
+    ) {
+      return true;
+    }
+    // If neither signal is available, the native pin button only exists on
+    // the viewer's own/manageable list rows.  Public list pages use the same
+    // localized "自分のリスト" heading, so a heading check would be wrong.
+    return Boolean(
+      document.querySelector('button[data-testid="list-icon-button"]')
+    );
+  }
+
+  function recordOwnListsTimelinePath() {
+    const match = location.pathname.match(/^\/([^/]+)\/lists\/?$/i);
+    if (!match) return;
+    const viewer = readViewerScreenNameFromDom();
+    if (viewer && decodeURIComponent(match[1]).toLowerCase() !== viewer) {
+      return;
+    }
+    state.ownListsTimelinePath = location.pathname;
+    try {
+      // postMessage can be missed if the isolated world has not registered
+      // its listener yet.  The DOM is shared across worlds, so leave the same
+      // signal on <html> for lists-page.js to read on its next scan.
+      document.documentElement.dataset.tblOwnListsPath = location.pathname;
+    } catch {
+      /* ignore */
+    }
+    // The isolated world needs this before the sidebar/profile link renders.
+    // Public list pages use CombinedLists, so this request is a reliable
+    // own-page signal and prevents the page from being treated as public.
+    emit('own-lists-page', { path: location.pathname });
+  }
+
+  let pageSortCollator = null;
+
+  function getPageSortCollator() {
+    if (!pageSortCollator) {
+      pageSortCollator = new Intl.Collator(undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    return pageSortCollator;
+  }
+
+  function isOwnedListsModule(content) {
+    if (!content || !Array.isArray(content.items)) return false;
+    const header = String(content.header?.text || '').trim();
+    return (
+      content.clientEventInfo?.component === 'suggest_owned_subscribed_list' ||
+      /^(自分のリスト|Your lists?)$/i.test(header)
+    );
+  }
+
+  function moduleItemList(moduleItem) {
+    return (
+      moduleItem?.item?.itemContent?.list ||
+      moduleItem?.itemContent?.list ||
+      moduleItem?.item?.value?.list ||
+      null
+    );
+  }
+
+  function moduleListMeta(list, index) {
+    if (!list || typeof list !== 'object') return null;
+    const rawId =
+      list.id_str != null
+        ? list.id_str
+        : list.rest_id != null
+          ? list.rest_id
+          : list.id;
+    if (rawId == null) return null;
+    const createdAt =
+      typeof list.created_at === 'number'
+        ? list.created_at
+        : Number.isFinite(Number(list.created_at)) && list.created_at !== ''
+          ? Number(list.created_at)
+          : 0;
+    return {
+      id: String(rawId),
+      name: typeof list.name === 'string' ? list.name : '',
+      createdAt,
+      index,
+    };
+  }
+
+  function compareModuleEntries(a, b, direction) {
+    if (a.id && b.id) {
+      try {
+        const diff = BigInt(a.id) - BigInt(b.id);
+        if (diff !== 0n) return direction * (diff > 0n ? 1 : -1);
+      } catch {
+        /* fall through */
+      }
+      const numA = Number(a.id);
+      const numB = Number(b.id);
+      if (Number.isFinite(numA) && Number.isFinite(numB) && numA !== numB) {
+        return direction * (numA > numB ? 1 : -1);
+      }
+    }
+    if (a.createdAt !== b.createdAt) {
+      return direction * (a.createdAt > b.createdAt ? 1 : -1);
+    }
+    return direction * (a.index - b.index);
+  }
+
+  function sortOwnedModuleItems(content, config) {
+    const items = content?.items;
+    if (!Array.isArray(items) || items.length < 2) return false;
+
+    const entries = items.map((item, index) => {
+      const list = moduleItemList(item);
+      return { item, list, meta: moduleListMeta(list, index) };
+    });
+    const listEntries = entries.filter((entry) => entry.meta);
+    if (listEntries.length < 2) return false;
+
+    const favoriteIndex = new Map(
+      config.favorites.map((id, index) => [String(id), index])
+    );
+    listEntries.sort((a, b) => {
+      const aFav = favoriteIndex.has(a.meta.id);
+      const bFav = favoriteIndex.has(b.meta.id);
+      if (config.favoritesFirst) {
+        if (aFav && bFav) {
+          return favoriteIndex.get(a.meta.id) - favoriteIndex.get(b.meta.id);
+        }
+        if (aFav !== bFav) return aFav ? -1 : 1;
+      }
+      if (config.mode === 'name') {
+        const diff = getPageSortCollator().compare(
+          a.meta.name,
+          b.meta.name
+        );
+        if (diff !== 0) return diff;
+        return compareModuleEntries(a.meta, b.meta, 1);
+      }
+      return config.mode === 'newest'
+        ? compareModuleEntries(a.meta, b.meta, -1)
+        : compareModuleEntries(a.meta, b.meta, 1);
+    });
+
+    // Put the sorted list items back into the slots they occupied.  Cursor or
+    // other non-list module items keep their original position.
+    const slots = [];
+    items.forEach((item, index) => {
+      if (moduleItemList(item)) slots.push(index);
+    });
+    if (slots.length !== listEntries.length) return false;
+
+    const next = items.slice();
+    slots.forEach((slot, index) => {
+      next[slot] = listEntries[index].item;
+    });
+    if (next.every((item, index) => item === items[index])) return false;
+
+    content.items = next;
+    return true;
+  }
+
+  function sortListsManagementResponse(root, config) {
+    let changed = false;
+    walkObject(root, (value) => {
+      if (!isOwnedListsModule(value)) return;
+      if (sortOwnedModuleItems(value, config)) changed = true;
+    });
+    return changed;
+  }
+
+  function isDiscoverListsModuleEntry(entry) {
+    const content = entry?.content;
+    if (!content) return false;
+    // The GraphQL response has `__typename` / `clientEventInfo`, while X's
+    // in-memory timeline store keeps only the rendered module fields.  Accept
+    // both shapes so hiding also works after remounts.
+    const isModule =
+      content.__typename === 'TimelineTimelineModule' ||
+      entry.type === 'timelineModule' ||
+      Array.isArray(content.items);
+    if (!isModule) return false;
+    if (isOwnedListsModule(content)) return false;
+    const header = String(content.header?.text || '').trim();
+    const component = content.clientEventInfo?.component || '';
+    return (
+      /^(新しいリストを見つける|おすすめのリスト|Discover new Lists?|New to Lists|Lists you might like|Suggested Lists?|Find new lists)$/i.test(
+        header
+      ) ||
+      component === 'suggest_list_to_follow' ||
+      component === 'suggest_recommended_lists'
+    );
+  }
+
+  function filterDiscoverListsFromResponse(root, config) {
+    if (!config?.hideDiscoverLists) return false;
+    let changed = false;
+    walkObject(root, (value) => {
+      if (!value || typeof value !== 'object') return;
+      if (Array.isArray(value.entries)) {
+        const remaining = value.entries.filter((entry) => !isDiscoverListsModuleEntry(entry));
+        if (remaining.length !== value.entries.length) {
+          value.entries = remaining;
+          changed = true;
+        }
+      }
+    });
+    return changed;
+  }
+
+  /*
+   * The response hook is enough for the first render, but changing the sort
+   * mode or starring a list must not reload the page.  X keeps the page data in
+   * its Redux/URT timeline store, and the virtualized rows are rendered from
+   * that store.  Update the owned module entry there and let React re-render
+   * the native rows in the new order.  This keeps X's virtualizer untouched.
+   */
+  function getReactFiber(node) {
+    if (!node) return null;
+    try {
+      const key = Object.keys(node).find((name) =>
+        name.startsWith('__reactFiber$')
+      );
+      return key ? node[key] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function findListsPageTimelineContext() {
+    try {
+      const cells = document.querySelectorAll('[data-testid="listCell"]');
+      for (const cell of cells) {
+        let fiber = getReactFiber(cell);
+        let depth = 0;
+        let module = null;
+        let store = null;
+        while (fiber && depth < 90) {
+          const props = fiber.memoizedProps || fiber.pendingProps;
+          if (props && typeof props === 'object') {
+            if (
+              !module &&
+              props.module &&
+              typeof props.module.selectTimeline === 'function' &&
+              typeof props.module.updateEntry === 'function'
+            ) {
+              module = props.module;
+            }
+            const value = props.value;
+            if (
+              !store &&
+              value &&
+              value.store &&
+              typeof value.store.dispatch === 'function' &&
+              typeof value.store.getState === 'function'
+            ) {
+              store = value.store;
+            }
+          }
+          if (module && store) return { module, store };
+          fiber = fiber.return;
+          depth += 1;
+        }
+      }
+    } catch {
+      /* X's internals are not public; fail closed. */
+    }
+    return null;
+  }
+
+  function listsEntityMap(storeState) {
+    const lists = storeState?.entities?.lists;
+    if (!lists || typeof lists !== 'object') return null;
+    if (lists.entities && typeof lists.entities === 'object') {
+      return lists.entities;
+    }
+    return lists;
+  }
+
+  function timelineItemId(item) {
+    const direct =
+      item?.content?.id ??
+      item?.content?.id_str ??
+      item?.content?.rest_id ??
+      null;
+    if (direct != null) return String(direct);
+    const list = moduleItemList(item);
+    if (!list || typeof list !== 'object') return '';
+    const rawId = list.id_str ?? list.rest_id ?? list.id;
+    return rawId == null ? '' : String(rawId);
+  }
+
+  function timelineItemMeta(item, storeState, index) {
+    const id = timelineItemId(item);
+    if (!id) return null;
+    const entity = listsEntityMap(storeState)?.[id] || null;
+    const list = moduleItemList(item);
+    const createdAt = Number(entity?.created_at ?? list?.created_at);
+    return {
+      id,
+      name:
+        typeof entity?.name === 'string' && entity.name
+          ? entity.name
+          : typeof list?.name === 'string'
+            ? list.name
+            : '',
+      createdAt: Number.isFinite(createdAt) ? createdAt : 0,
+      index,
+    };
+  }
+
+  function findOwnedTimelineEntry(timeline) {
+    const entries = Array.isArray(timeline?.entries) ? timeline.entries : [];
+    return (
+      entries.find((entry) => {
+        const content = entry?.content;
+        if (!content || !Array.isArray(content.items)) return false;
+        if (
+          /^owned-subscribed-list-module-/i.test(
+            String(entry.entryId || '')
+          )
+        ) {
+          return true;
+        }
+        const header = String(content.header?.text || '').trim();
+        return (
+          content.clientEventInfo?.component ===
+            'suggest_owned_subscribed_list' ||
+          /^(自分のリスト|Your lists?)$/i.test(header)
+        );
+      }) || null
+    );
+  }
+
+  function sortTimelineStoreItems(items, storeState, config) {
+    if (!Array.isArray(items) || items.length < 2) {
+      return { items, changed: false };
+    }
+    const entries = items.map((item, index) => ({
+      item,
+      meta: timelineItemMeta(item, storeState, index),
+    }));
+    const listEntries = entries.filter((entry) => entry.meta);
+    if (listEntries.length < 2) return { items, changed: false };
+
+    const favoriteIndex = new Map(
+      config.favorites.map((id, index) => [String(id), index])
+    );
+    listEntries.sort((a, b) => {
+      const aFav = favoriteIndex.has(a.meta.id);
+      const bFav = favoriteIndex.has(b.meta.id);
+      if (config.favoritesFirst) {
+        if (aFav && bFav) {
+          return favoriteIndex.get(a.meta.id) - favoriteIndex.get(b.meta.id);
+        }
+        if (aFav !== bFav) return aFav ? -1 : 1;
+      }
+      if (config.mode === 'name') {
+        const diff = getPageSortCollator().compare(
+          a.meta.name,
+          b.meta.name
+        );
+        if (diff !== 0) return diff;
+        return compareModuleEntries(a.meta, b.meta, 1);
+      }
+      return config.mode === 'newest'
+        ? compareModuleEntries(a.meta, b.meta, -1)
+        : compareModuleEntries(a.meta, b.meta, 1);
+    });
+
+    const slots = [];
+    items.forEach((item, index) => {
+      if (timelineItemId(item)) slots.push(index);
+    });
+    if (slots.length !== listEntries.length) {
+      return { items, changed: false };
+    }
+
+    const next = items.slice();
+    slots.forEach((slot, index) => {
+      next[slot] = listEntries[index].item;
+    });
+    return {
+      items: next,
+      changed: next.some((item, index) => item !== items[index]),
+    };
+  }
+
+  function applyPageSortToStore() {
+    if (!isOwnListsPage()) return false;
+    const context = findListsPageTimelineContext();
+    if (!context) return false;
+    try {
+      const { module, store } = context;
+      const storeState = store.getState();
+      const timeline = module.selectTimeline(storeState);
+      const entry = findOwnedTimelineEntry(timeline);
+      if (!entry) return false;
+
+      const config =
+        state.pageSortConfig || normalizePageSortConfig(DEFAULT_PAGE_SORT_CONFIG);
+      const result = sortTimelineStoreItems(
+        entry.content.items,
+        storeState,
+        config
+      );
+      if (!result.changed) return false;
+
+      const action = module.updateEntry(entry.entryId, {
+        ...entry.content,
+        items: result.items,
+      });
+      store.dispatch(action);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /*
+   * X can keep the recommended-list module in its in-memory timeline store
+   * even when the network response has already been filtered (for example
+   * after navigating back to the page).  Remove that module from the store as
+   * well, otherwise remounting the virtualizer makes the hidden section
+   * reappear after scrolling to the bottom and back.
+   */
+  const DISCOVER_RELOAD_COUNT_KEY = 'tbl-discover-reload-count';
+  let discoverMissingTimer = null;
+
+  function readDiscoverReloadCount() {
+    try {
+      return Number(sessionStorage.getItem(DISCOVER_RELOAD_COUNT_KEY) || 0) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function setDiscoverReloadCount(value) {
+    try {
+      sessionStorage.setItem(DISCOVER_RELOAD_COUNT_KEY, String(value));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function resetDiscoverReloadCount() {
+    try {
+      sessionStorage.removeItem(DISCOVER_RELOAD_COUNT_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function reloadIfDiscoverMissing() {
+    if (!state.pageSortConfig || state.pageSortConfig.hideDiscoverLists) {
+      return false;
+    }
+    if (!isOwnListsPage()) return false;
+    const context = findListsPageTimelineContext();
+    if (!context) return false;
+    try {
+      const { module, store } = context;
+      const timeline = module.selectTimeline(store.getState());
+      if (!findOwnedTimelineEntry(timeline)) return false;
+      const entries = Array.isArray(timeline?.entries) ? timeline.entries : [];
+      if (!entries.length) return false;
+      if (entries.some((entry) => isDiscoverListsModuleEntry(entry))) {
+        return false;
+      }
+      // The owned list is loaded but the recommendation module is gone.
+      // With the option off this only happens when the module was removed
+      // during an earlier ON visit and X is serving the timeline from cache
+      // without refetching.  Reload once so X fetches it again.  The count
+      // (reset whenever the option is turned back ON) prevents a reload
+      // loop if X genuinely has no recommendations for this account.
+      if (readDiscoverReloadCount() >= 1) return false;
+      setDiscoverReloadCount(1);
+      location.reload();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function scheduleMissingDiscoverReload() {
+    if (discoverMissingTimer) return false;
+    discoverMissingTimer = setTimeout(() => {
+      discoverMissingTimer = null;
+      reloadIfDiscoverMissing();
+    }, 900);
+    return true;
+  }
+
+  function applyDiscoverVisibilityToStore() {
+    if (!state.pageSortConfig) return false;
+    if (!state.pageSortConfig.hideDiscoverLists) {
+      // OFF: the recommendation module must be present.  If an earlier ON
+      // visit removed it from X's cached timeline, restore it with one
+      // reload (scheduled so a just-arriving fetch can populate the store
+      // first).  This never runs when the option is ON.
+      return scheduleMissingDiscoverReload();
+    }
+    resetDiscoverReloadCount();
+    if (!isOwnListsPage()) return false;
+    const context = findListsPageTimelineContext();
+    if (!context) return false;
+    try {
+      const { module, store } = context;
+      if (typeof module.removeEntry !== 'function') return false;
+      const timeline = module.selectTimeline(store.getState());
+      // Only the owner's own lists page has the "Your lists" module.  Do not
+      // remove recommendation modules from unrelated public list pages.
+      if (!findOwnedTimelineEntry(timeline)) return false;
+      const entries = Array.isArray(timeline?.entries) ? timeline.entries : [];
+      const discoverEntries = entries.filter((entry) =>
+        isDiscoverListsModuleEntry(entry)
+      );
+      if (!discoverEntries.length) return false;
+      for (const entry of discoverEntries) {
+        store.dispatch(module.removeEntry(entry.entryId));
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  let discoverVisibilityTimer = null;
+
+  function scheduleDiscoverVisibilityApply(delay = 0) {
+    if (discoverVisibilityTimer) clearTimeout(discoverVisibilityTimer);
+    discoverVisibilityTimer = setTimeout(() => {
+      discoverVisibilityTimer = null;
+      applyDiscoverVisibilityToStore();
+    }, delay);
+  }
+
+  let pageSortApplyTimer = null;
+
+  function schedulePageSortApply(delay = 0) {
+    if (pageSortApplyTimer) clearTimeout(pageSortApplyTimer);
+    pageSortApplyTimer = setTimeout(() => {
+      pageSortApplyTimer = null;
+      applyPageSortToStore();
+    }, delay);
+  }
+
+  function findOwnedModuleContent(root) {
+    let found = null;
+    walkObject(root, (value) => {
+      if (found) return false;
+      if (!isOwnedListsModule(value)) return;
+      found = value;
+      return false;
+    });
+    return found;
+  }
+
   function normalizeTimeline(timeline) {
     const items = [];
     let nextCursor = null;
@@ -753,6 +1399,91 @@
     return null;
   }
 
+  /*
+   * X's web client currently performs many GraphQL requests with XHR rather
+   * than fetch.  The fetch hook alone therefore cannot stop the recommended
+   * module (or an unsorted module) from reaching React first.  Override the
+   * instance's response getters so X reads the filtered/sorted JSON, while
+   * keeping the store-level fallback below for cached or XHR paths that
+   * cannot be intercepted.
+   */
+  function installListsPageXhrResponseHook(xhr) {
+    if (!xhr || xhr.__tblListsPageResponseHooked) return;
+    xhr.__tblListsPageResponseHooked = true;
+    try {
+      const textDescriptor = Object.getOwnPropertyDescriptor(
+        XMLHttpRequest.prototype,
+        'responseText'
+      );
+      const responseDescriptor = Object.getOwnPropertyDescriptor(
+        XMLHttpRequest.prototype,
+        'response'
+      );
+      if (!textDescriptor?.get) return;
+
+      let prepared = false;
+      const prepare = () => {
+        if (prepared) return;
+        prepared = true;
+        try {
+          const config = state.pageSortConfig;
+          if (!config || !isOwnListsPage()) return;
+          let json = null;
+          if (xhr.responseType === 'json' && responseDescriptor?.get) {
+            const value = responseDescriptor.get.call(xhr);
+            if (value && typeof value === 'object') json = value;
+          } else {
+            const raw = textDescriptor.get.call(xhr);
+            if (typeof raw === 'string' && raw) json = safeJson(raw);
+          }
+          if (!json) return;
+          let changed = false;
+          if (filterDiscoverListsFromResponse(json, config)) changed = true;
+          if (sortListsManagementResponse(json, config)) changed = true;
+          if (!changed) return;
+          xhr.__tblListsPageModifiedText = JSON.stringify(json);
+          if (xhr.responseType === 'json') {
+            xhr.__tblListsPageModifiedResponse = json;
+          }
+        } catch {
+          /* keep X's original response */
+        }
+      };
+
+      Object.defineProperty(xhr, 'responseText', {
+        configurable: true,
+        get() {
+          const raw = textDescriptor.get.call(xhr);
+          if (xhr.readyState !== 4) return raw;
+          prepare();
+          return xhr.__tblListsPageModifiedText !== undefined
+            ? xhr.__tblListsPageModifiedText
+            : raw;
+        },
+      });
+
+      if (responseDescriptor?.get) {
+        Object.defineProperty(xhr, 'response', {
+          configurable: true,
+          get() {
+            const value = responseDescriptor.get.call(xhr);
+            if (xhr.readyState !== 4) return value;
+            prepare();
+            if (xhr.__tblListsPageModifiedResponse !== undefined) {
+              return xhr.__tblListsPageModifiedResponse;
+            }
+            if (xhr.__tblListsPageModifiedText !== undefined) {
+              return xhr.__tblListsPageModifiedText;
+            }
+            return value;
+          },
+        });
+      }
+    } catch {
+      /* XHR internals can differ between builds; store fallback still runs. */
+    }
+  }
+
   function handleListQuery(data, requestInfo) {
     const listsPageTimeline = findListsManagementTimeline(data);
     const ownershipTimeline = listsPageTimeline
@@ -804,6 +1535,10 @@
     state.lastListQuery = payload;
     state.lastEmitAt = Date.now();
     emit('list-query', payload);
+    if (listsPageTimeline) {
+      schedulePageSortApply(40);
+      scheduleDiscoverVisibilityApply(40);
+    }
   }
 
   function handleMutation(data, requestInfo) {
@@ -1036,6 +1771,9 @@
           variablesFromUrl
         );
         rememberListRequest(requestInfo);
+        if (requestInfo.operationName === LISTS_PAGE_QUERY_OP) {
+          recordOwnListsTimelinePath();
+        }
       }
     } catch {
       /* ignore */
@@ -1046,9 +1784,35 @@
       ? await originalFetch.call(this, boosted.input, boosted.init)
       : await originalFetch.apply(this, arguments);
 
+    let finalResponse = response;
+    if (
+      requestInfo?.operationName === LISTS_PAGE_QUERY_OP &&
+      isOwnListsPage()
+    ) {
+      try {
+        const json = await response.clone().json();
+        const config = await readPageSortConfigForResponse();
+        let changed = false;
+        if (filterDiscoverListsFromResponse(json, config)) changed = true;
+        if (sortListsManagementResponse(json, config)) changed = true;
+        if (changed) {
+          const headers = new Headers(response.headers);
+          headers.delete('content-length');
+          headers.delete('content-encoding');
+          finalResponse = new Response(JSON.stringify(json), {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        }
+      } catch {
+        /* ignore: return X's original response */
+      }
+    }
+
     if (requestInfo) {
       try {
-        response
+        finalResponse
           .clone()
           .json()
           .then((json) => handleGraphQLResponse(requestInfo, json))
@@ -1058,7 +1822,7 @@
       }
     }
 
-    return response;
+    return finalResponse;
   };
 
   /* ------------------------------------------------------------------ */
@@ -1107,6 +1871,10 @@
               variablesFromUrl
             );
             rememberListRequest(requestInfo);
+            if (requestInfo.operationName === LISTS_PAGE_QUERY_OP) {
+              recordOwnListsTimelinePath();
+              installListsPageXhrResponseHook(this);
+            }
             this.addEventListener('load', () => {
               try {
                 const text = this.responseType === 'json'
@@ -1336,6 +2104,168 @@
   }
 
   /* ------------------------------------------------------------------ */
+  /* own lists page refresh                                             */
+  /* ------------------------------------------------------------------ */
+
+  function mergePageListEntity(entityMap, rawList) {
+    const rawId = rawList?.id_str ?? rawList?.rest_id ?? rawList?.id;
+    if (rawId == null) return null;
+    const id = String(rawId);
+    const current = entityMap[id] || {};
+    const ownerId = extractOwnerId(rawList);
+    entityMap[id] = {
+      ...current,
+      ...rawList,
+      id: rawList.id ?? current.id,
+      id_str: rawList.id_str ?? current.id_str ?? id,
+      name: rawList.name ?? current.name,
+      created_at: rawList.created_at ?? current.created_at,
+      member_count: rawList.member_count ?? current.member_count,
+      user: ownerId || current.user,
+    };
+    return id;
+  }
+
+  function createTimelineItemForList(list, templateItem) {
+    const normalized = normalizeList(list);
+    if (!normalized || !templateItem) return null;
+    return {
+      ...templateItem,
+      entryId: `owned-subscribed-list-module-0-list-${normalized.id}`,
+      content: {
+        ...(templateItem.content || {}),
+        displayType: templateItem.content?.displayType || 'ListWithPin',
+        id: normalized.id,
+        isMember: Boolean(list.is_member),
+      },
+      itemMetadata: templateItem.itemMetadata,
+      sortIndex: templateItem.sortIndex,
+      type: 'twitterList',
+    };
+  }
+
+  async function refreshListsPage() {
+    try {
+      if (!isOwnListsPage()) {
+        throw new Error('自分のリスト一覧ページを開いてください');
+      }
+      const context = findListsPageTimelineContext();
+      if (!context) {
+        throw new Error('リスト一覧ページを開いてください');
+      }
+      const template = state.requestTemplates[LISTS_PAGE_QUERY_OP];
+      if (!template?.url) {
+        throw new Error('Xのリスト一覧リクエストを取得できませんでした');
+      }
+
+      const method = (template.method || 'GET').toUpperCase();
+      const headers = normalizeHeadersForReplay();
+      const response = await originalFetch.call(window, template.url, {
+        method,
+        headers,
+        credentials: 'include',
+        cache: 'no-store',
+        body: method === 'GET' ? undefined : template.body || undefined,
+      });
+      const json = await response.json().catch(() => null);
+      if (!response.ok || !json) {
+        throw new Error(
+          json?.errors?.map((error) => error.message).filter(Boolean).join(' / ') ||
+            `HTTP ${response.status}`
+        );
+      }
+      if (Array.isArray(json.errors) && json.errors.length && !json.data) {
+        throw new Error(
+          json.errors.map((error) => error.message).filter(Boolean).join(' / ')
+        );
+      }
+
+      const config =
+        state.pageSortConfig || {
+          ...normalizePageSortConfig(DEFAULT_PAGE_SORT_CONFIG),
+          // Unknown means storage has not reached MAIN yet.  Do not hide
+          // recommendations in that case; a stale hide would be worse than
+          // showing them for one refresh.
+          hideDiscoverLists: false,
+        };
+      filterDiscoverListsFromResponse(json, config);
+      sortListsManagementResponse(json, config);
+
+      const ownedContent = findOwnedModuleContent(json);
+      if (!ownedContent) {
+        throw new Error('リストデータが見つかりませんでした');
+      }
+      const { module, store } = context;
+      const storeState = store.getState();
+      const timeline = module.selectTimeline(storeState);
+      const entry = findOwnedTimelineEntry(timeline);
+      const entityMap = listsEntityMap(storeState);
+      if (!entry || !entityMap) {
+        throw new Error('Xのリストデータを更新できませんでした');
+      }
+
+      const existingItems = Array.isArray(entry.content?.items)
+        ? entry.content.items
+        : [];
+      const byId = new Map();
+      for (const item of existingItems) {
+        const id = timelineItemId(item);
+        if (id) byId.set(id, item);
+      }
+      const templateItem = existingItems.find((item) => timelineItemId(item));
+      if (!templateItem) {
+        throw new Error('リスト行のテンプレートを取得できませんでした');
+      }
+
+      const nextItems = [];
+      for (const moduleItem of ownedContent.items || []) {
+        const list = moduleItemList(moduleItem);
+        if (!list) continue;
+        const id = mergePageListEntity(entityMap, list);
+        if (!id) continue;
+        const item =
+          byId.get(id) || createTimelineItemForList(list, templateItem);
+        if (item) nextItems.push(item);
+      }
+      if (!nextItems.length) {
+        throw new Error('更新できるリストがありませんでした');
+      }
+
+      const sorted = sortTimelineStoreItems(nextItems, storeState, config);
+      store.dispatch(
+        module.updateEntry(entry.entryId, {
+          ...entry.content,
+          items: sorted.items,
+        })
+      );
+      if (config.hideDiscoverLists) {
+        applyDiscoverVisibilityToStore();
+        scheduleDiscoverVisibilityApply(40);
+      }
+
+      // Keep the extension's own cache in sync with the refreshed page data.
+      handleListQuery(json, {
+        url: template.url,
+        method,
+        variables: template.variables,
+        operationName: LISTS_PAGE_QUERY_OP,
+        queryId: template.queryId,
+      });
+
+      emit('page-refresh-result', {
+        ok: true,
+        count: nextItems.length,
+        receivedAt: Date.now(),
+      });
+    } catch (error) {
+      emit('page-refresh-result', {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /* ------------------------------------------------------------------ */
   /* isolated world bridge                                              */
   /* ------------------------------------------------------------------ */
 
@@ -1362,6 +2292,13 @@
         return;
       }
 
+      if (data.type === 'set-page-sort') {
+        state.pageSortConfig = normalizePageSortConfig(data.payload);
+        schedulePageSortApply();
+        scheduleDiscoverVisibilityApply();
+        return;
+      }
+
       if (data.type === 'read-list-page') {
         emit('list-page-meta', {
           requestId: data.payload?.requestId || null,
@@ -1373,6 +2310,11 @@
       if (data.type === 'fetch-all-lists') {
         const payload = data.payload || {};
         fetchAllLists(payload);
+        return;
+      }
+
+      if (data.type === 'refresh-lists-page') {
+        refreshListsPage();
         return;
       }
 
