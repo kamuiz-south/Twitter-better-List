@@ -18,96 +18,220 @@
       />
       <div>
         <h1>Twitter Better List</h1>
-        <p class="sub">リスト追加画面の並び替えとお気に入り</p>
+        <p class="sub">リスト管理とタイムラインの（・・・）メニューを快適に</p>
       </div>
     </header>
 
     <main>
-      <section class="card">
-        <h2>既定の並び順</h2>
-        <div class="segmented" id="sort-group" role="group" aria-label="既定の並び順">
-          <button type="button" data-sort="name">名前順</button>
-          <button type="button" data-sort="newest">新しい順</button>
-          <button type="button" data-sort="oldest">古い順</button>
-        </div>
-        <label class="row">
-          <span>お気に入りを最上部に固定</span>
-          <input type="checkbox" id="favorites-first" />
-        </label>
-        <label class="row">
-          <span>未取得のリストを自動で読み込む</span>
-          <input type="checkbox" id="auto-load" />
-        </label>
+      <div class="tabs" role="tablist" aria-label="設定">
+        <button
+          type="button"
+          class="tab is-active"
+          id="tab-lists"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-lists"
+          data-tab="lists"
+        >
+          リスト
+        </button>
+        <button
+          type="button"
+          class="tab"
+          id="tab-menu"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-menu"
+          data-tab="menu"
+        >
+          （・・・）メニュー
+        </button>
+      </div>
+
+      <section
+        class="tab-panel is-active"
+        id="panel-lists"
+        role="tabpanel"
+        aria-labelledby="tab-lists"
+        data-panel="lists"
+      >
+        <section class="card">
+          <h2>既定の並び順</h2>
+          <div class="segmented" id="sort-group" role="group" aria-label="既定の並び順">
+            <button type="button" data-sort="name">名前順</button>
+            <button type="button" data-sort="newest">新しい順</button>
+            <button type="button" data-sort="oldest">古い順</button>
+          </div>
+          <label class="row">
+            <span>お気に入りを最上部に固定</span>
+            <input type="checkbox" id="favorites-first" />
+          </label>
+          <label class="row">
+            <span>未取得のリストを自動で読み込む</span>
+            <input type="checkbox" id="auto-load" />
+          </label>
+        </section>
+
+        <section class="card">
+          <h2>リストから追加/削除</h2>
+          <label class="row">
+            <span>検索欄を表示</span>
+            <input type="checkbox" id="dialog-search" />
+          </label>
+          <p class="hint">
+            自分のリスト一覧ページでは常に表示されます。初期設定ではオフです。
+          </p>
+        </section>
+
+        <section class="card">
+          <h2>サイドバー</h2>
+          <label class="row">
+            <span>「More」を展開する（投稿ボタンの上に項目を表示）</span>
+            <input type="checkbox" id="sidebar-enabled" />
+          </label>
+          <p class="hint">
+            オフにすると標準の「More」メニューのままになります。オンの場合も、反映にはページの再読み込みが必要です。
+          </p>
+        </section>
+
+        <section class="card">
+          <h2>リスト一覧ページ</h2>
+          <label class="row">
+            <span>「新しいリストを見つける」を隠す</span>
+            <input type="checkbox" id="hide-discover" />
+          </label>
+          <p class="hint">
+            オン（既定）にするとおすすめリストを完全に隠し、スクロールを滑らかにします。オフにすると標準のまま表示します。
+          </p>
+        </section>
+
+        <section class="card">
+          <h2>キャッシュ</h2>
+          <p class="meta" id="cache-meta">リストデータはまだありません。</p>
+          <div class="actions">
+            <button type="button" class="secondary" id="clear-cache">キャッシュを消去</button>
+            <button type="button" class="secondary" id="open-x">X を開く</button>
+          </div>
+          <p class="hint">
+            リストの追加・削除は X 本体のボタンで行われます。拡張機能が代行して追加することはありません。
+          </p>
+          <p class="hint">
+            キャッシュはブラウザを終了しても保持されます。X 側でリストを変更したときは、追加/削除画面の ↻ で更新してください。
+          </p>
+        </section>
+
+        <section class="card">
+          <h2>バックアップ / 移動</h2>
+          <p class="hint">
+            お気に入り・タグ・設定だけを JSON にします。リストのキャッシュは含みません。
+          </p>
+          <textarea
+            id="backup-text"
+            class="backup-text"
+            spellcheck="false"
+            placeholder="エクスポートした JSON、または移行元の JSON を貼り付け"
+          ></textarea>
+          <div class="actions">
+            <button type="button" class="secondary" id="export-backup">
+              エクスポート
+            </button>
+            <button type="button" class="secondary" id="import-backup">
+              インポート
+            </button>
+          </div>
+          <p class="meta backup-status" id="backup-status"></p>
+        </section>
       </section>
 
-      <section class="card">
-        <h2>リストから追加/削除</h2>
-        <label class="row">
-          <span>検索欄を表示</span>
-          <input type="checkbox" id="dialog-search" />
-        </label>
-        <p class="hint">
-          自分のリスト一覧ページでは常に表示されます。初期設定ではオフです。
-        </p>
-      </section>
+      <section
+        class="tab-panel"
+        id="panel-menu"
+        role="tabpanel"
+        aria-labelledby="tab-menu"
+        data-panel="menu"
+        hidden
+      >
+        <section class="card">
+          <h2>タイムラインの（・・・）メニュー</h2>
+          <p class="hint">
+            自分以外のポストにある（・・・）メニューだけに適用します。プロフィール画面と自分のポストのメニューには適用しません。チェックした項目を非表示にします。
+          </p>
+        </section>
 
-      <section class="card">
-        <h2>サイドバー</h2>
-        <label class="row">
-          <span>「More」を展開する（投稿ボタンの上に項目を表示）</span>
-          <input type="checkbox" id="sidebar-enabled" />
-        </label>
-        <p class="hint">
-          オフにすると標準の「More」メニューのままになります。オンの場合も、反映にはページの再読み込みが必要です。
-        </p>
-      </section>
+        <section class="card">
+          <h2>基本項目</h2>
+          <label class="row">
+            <span>このポストに興味がない</span>
+            <input type="checkbox" data-menu-setting="notInterested" />
+          </label>
+          <label class="row">
+            <span>フォローを隠す</span>
+            <input type="checkbox" data-menu-setting="follow" />
+          </label>
+          <label class="row">
+            <span>フォロー解除を隠す</span>
+            <input type="checkbox" data-menu-setting="unfollow" />
+          </label>
+          <label class="row">
+            <span>リストから追加/削除</span>
+            <input type="checkbox" data-menu-setting="listAddRemove" />
+          </label>
+          <label class="row">
+            <span>ミュート</span>
+            <input type="checkbox" data-menu-setting="mute" />
+          </label>
+          <label class="row">
+            <span>ブロック</span>
+            <input type="checkbox" data-menu-setting="block" />
+          </label>
+        </section>
 
-      <section class="card">
-        <h2>リスト一覧ページ</h2>
-        <label class="row">
-          <span>「新しいリストを見つける」を隠す</span>
-          <input type="checkbox" id="hide-discover" />
-        </label>
-        <p class="hint">
-          オン（既定）にするとおすすめリストを完全に隠し、スクロールを滑らかにします。オフにすると標準のまま表示します。
-        </p>
-      </section>
+        <section class="card">
+          <h2>引用RT・会話</h2>
+          <label class="row">
+            <span>引用RTをオフにする</span>
+            <input type="checkbox" data-menu-setting="quoteOff" />
+          </label>
+          <label class="row">
+            <span>この会話をミュート</span>
+            <input type="checkbox" data-menu-setting="muteConversation" />
+          </label>
+        </section>
 
-      <section class="card">
-        <h2>キャッシュ</h2>
-        <p class="meta" id="cache-meta">リストデータはまだありません。</p>
-        <div class="actions">
-          <button type="button" class="secondary" id="clear-cache">キャッシュを消去</button>
-          <button type="button" class="secondary" id="open-x">X を開く</button>
-        </div>
-        <p class="hint">
-          リストの追加・削除は X 本体のボタンで行われます。拡張機能が代行して追加することはありません。
-        </p>
-        <p class="hint">
-          キャッシュはブラウザを終了しても保持されます。X 側でリストを変更したときは、追加/削除画面の ↻ で更新してください。
-        </p>
-      </section>
+        <section class="card">
+          <h2>その他の項目</h2>
+          <label class="row">
+            <span>ポストアクティビティを表示</span>
+            <input type="checkbox" data-menu-setting="postActivity" />
+          </label>
+          <label class="row">
+            <span>ポストを埋め込む</span>
+            <input type="checkbox" data-menu-setting="embedPost" />
+          </label>
+          <label class="row">
+            <span>画像を編集</span>
+            <input type="checkbox" data-menu-setting="editImage" />
+          </label>
+          <label class="row">
+            <span>ポストを報告</span>
+            <input type="checkbox" data-menu-setting="report" />
+          </label>
+          <label class="row">
+            <span>コミュニティノートをリクエスト</span>
+            <input type="checkbox" data-menu-setting="communityNote" />
+          </label>
+        </section>
 
-      <section class="card">
-        <h2>バックアップ / 移動</h2>
-        <p class="hint">
-          お気に入り・タグ・設定だけを JSON にします。リストのキャッシュは含みません。
-        </p>
-        <textarea
-          id="backup-text"
-          class="backup-text"
-          spellcheck="false"
-          placeholder="エクスポートした JSON、または移行元の JSON を貼り付け"
-        ></textarea>
-        <div class="actions">
-          <button type="button" class="secondary" id="export-backup">
-            エクスポート
-          </button>
-          <button type="button" class="secondary" id="import-backup">
-            インポート
-          </button>
-        </div>
-        <p class="meta backup-status" id="backup-status"></p>
+        <section class="card card-note">
+          <h2>誤クリック防止</h2>
+          <label class="row">
+            <span>メニュー最上部に機能のない項目を追加</span>
+            <input type="checkbox" data-menu-setting="topSpacer" />
+          </label>
+          <p class="hint">
+            メニューを開いた直後に、一番上の項目を誤って押すのを防ぎます。
+          </p>
+        </section>
       </section>
     </main>
 

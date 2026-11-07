@@ -817,6 +817,31 @@ body[data-tbl-extracting="1"] [role="menu"] {
   pointer-events: none !important;
 }
 
+/*
+ * タイムラインの（・・・）メニューは、項目を確定するまで不可視にする。
+ * 非表示対象が一瞬見えて誤クリックされるのを防ぐ。
+ */
+html[data-tbl-tweet-menu-guard="1"] [role="menu"] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.tbl-tweet-menu-hidden {
+  display: none !important;
+}
+
+.tbl-tweet-menu-spacer {
+  pointer-events: auto;
+  cursor: default;
+  user-select: none;
+}
+
+/* ダミー項目は通常の操作項目ではないため、文字を控えめにする。 */
+.tbl-tweet-menu-spacer,
+.tbl-tweet-menu-spacer * {
+  color: #71767b !important;
+}
+
 /* 抽出中だけ More を不可視にする。display:none にするとメニューの
    位置計算が壊れるため、レイアウトを保つ visibility を使う。 */
 body[data-tbl-extracting="1"]

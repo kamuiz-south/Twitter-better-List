@@ -2,6 +2,23 @@
 (() => {
   'use strict';
 
+  const DEFAULT_TWEET_MENU = {
+    topSpacer: false,
+    notInterested: false,
+    follow: false,
+    unfollow: false,
+    listAddRemove: false,
+    mute: false,
+    quoteOff: false,
+    muteConversation: false,
+    block: false,
+    postActivity: false,
+    embedPost: false,
+    editImage: false,
+    report: false,
+    communityNote: false,
+  };
+
   const DEFAULT_SETTINGS = {
     version: 1,
     sortMode: 'newest',
@@ -13,6 +30,7 @@
     sidebarEnabled: true,
     hideDiscoverLists: true,
     dialogSearch: false,
+    tweetMenu: { ...DEFAULT_TWEET_MENU },
     language: 'auto',
   };
 
@@ -31,6 +49,9 @@
     exportBackup: document.getElementById('export-backup'),
     importBackup: document.getElementById('import-backup'),
     version: document.getElementById('version'),
+    tabs: document.querySelectorAll('[data-tab]'),
+    panels: document.querySelectorAll('[data-panel]'),
+    menuOptions: document.querySelectorAll('[data-menu-setting]'),
   };
 
   let state = {
@@ -72,6 +93,13 @@
       next.hideDiscoverLists = true;
     }
     if (typeof next.dialogSearch !== 'boolean') next.dialogSearch = false;
+    if (!next.tweetMenu || typeof next.tweetMenu !== 'object') {
+      next.tweetMenu = {};
+    }
+    next.tweetMenu = { ...DEFAULT_TWEET_MENU, ...next.tweetMenu };
+    for (const key of Object.keys(DEFAULT_TWEET_MENU)) {
+      next.tweetMenu[key] = next.tweetMenu[key] === true;
+    }
     return next;
   }
 
@@ -118,6 +146,23 @@
     el.sidebarEnabled.checked = settings.sidebarEnabled !== false;
     el.hideDiscover.checked = settings.hideDiscoverLists === true;
     el.dialogSearch.checked = settings.dialogSearch === true;
+    el.menuOptions.forEach((input) => {
+      input.checked = settings.tweetMenu[input.dataset.menuSetting] === true;
+    });
+  }
+
+  function activateTab(name) {
+    el.tabs.forEach((tab) => {
+      const active = tab.dataset.tab === name;
+      tab.classList.toggle('is-active', active);
+      tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      tab.tabIndex = active ? 0 : -1;
+    });
+    el.panels.forEach((panel) => {
+      const active = panel.dataset.panel === name;
+      panel.classList.toggle('is-active', active);
+      panel.hidden = !active;
+    });
   }
 
   function renderCacheMeta() {
@@ -191,6 +236,7 @@
       sidebarEnabled: raw.sidebarEnabled,
       hideDiscoverLists: raw.hideDiscoverLists,
       dialogSearch: raw.dialogSearch,
+      tweetMenu: raw.tweetMenu,
       language: ['auto', 'ja', 'en'].includes(raw.language)
         ? raw.language
         : 'auto',
@@ -300,6 +346,31 @@
       setSettings(state.settings);
     });
 
+    el.menuOptions.forEach((input) => {
+      input.addEventListener('change', () => {
+        state.settings.tweetMenu = {
+          ...state.settings.tweetMenu,
+          [input.dataset.menuSetting]: input.checked,
+        };
+        setSettings(state.settings);
+      });
+    });
+
+    el.tabs.forEach((tab) => {
+      tab.addEventListener('click', () => activateTab(tab.dataset.tab));
+      tab.addEventListener('keydown', (event) => {
+        if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+        event.preventDefault();
+        const list = Array.from(el.tabs);
+        const index = list.indexOf(tab);
+        const next = event.key === 'ArrowRight'
+          ? (index + 1) % list.length
+          : (index - 1 + list.length) % list.length;
+        list[next].focus();
+        activateTab(list[next].dataset.tab);
+      });
+    });
+
     el.clearCache.addEventListener('click', async () => {
       if (!confirm('リストのキャッシュを消去します。お気に入り設定は残ります。よろしいですか？')) {
         return;
@@ -354,6 +425,7 @@
         'sidebarEnabled',
         'hideDiscoverLists',
         'dialogSearch',
+        'tweetMenu',
         'language',
       ];
       if (
@@ -407,6 +479,7 @@
     state.meta = stored.meta && typeof stored.meta === 'object' ? stored.meta : {};
     renderSettings();
     renderCacheMeta();
+    activateTab('lists');
     bindEvents();
 
     chrome.storage.onChanged.addListener((changes, area) => {

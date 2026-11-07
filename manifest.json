@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Twitter Better List",
-  "version": "1.1.1",
-  "description": "X (Twitter) のリスト追加/削除画面とリスト一覧を並び替え・お気に入り・タグ対応にし、左メニューの「More」を展開します。",
+  "version": "1.2.0",
+  "description": "X (Twitter) のリスト追加/削除画面とリスト一覧を並び替え・お気に入り・タグ対応にし、タイムラインの（・・・）メニュー項目を非表示にできます。左メニューの「More」も展開します。",
   "minimum_chrome_version": "111",
   "permissions": ["storage", "clipboardWrite"],
   "host_permissions": [
@@ -18,7 +18,12 @@
     },
     {
       "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["src/content.js", "src/sidebar.js", "src/lists-page.js"],
+      "js": [
+        "src/content.js",
+        "src/sidebar.js",
+        "src/lists-page.js",
+        "src/tweet-menu.js"
+      ],
       "css": ["src/content.css"],
       "run_at": "document_start"
     }

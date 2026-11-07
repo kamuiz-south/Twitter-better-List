@@ -26,6 +26,23 @@
    */
   const AUTO_REFRESH_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+  const DEFAULT_TWEET_MENU = {
+    topSpacer: false,
+    notInterested: false,
+    follow: false,
+    unfollow: false,
+    listAddRemove: false,
+    mute: false,
+    quoteOff: false,
+    muteConversation: false,
+    block: false,
+    postActivity: false,
+    embedPost: false,
+    editImage: false,
+    report: false,
+    communityNote: false,
+  };
+
   const DEFAULT_SETTINGS = {
     version: 1,
     sortMode: 'newest', // name | newest | oldest
@@ -37,6 +54,7 @@
     sidebarEnabled: true,
     hideDiscoverLists: true,
     dialogSearch: false,
+    tweetMenu: { ...DEFAULT_TWEET_MENU },
     language: 'auto',
   };
 
@@ -247,6 +265,13 @@
       next.hideDiscoverLists = true;
     }
     if (typeof next.dialogSearch !== 'boolean') next.dialogSearch = false;
+    if (!next.tweetMenu || typeof next.tweetMenu !== 'object') {
+      next.tweetMenu = {};
+    }
+    next.tweetMenu = { ...DEFAULT_TWEET_MENU, ...next.tweetMenu };
+    for (const key of Object.keys(DEFAULT_TWEET_MENU)) {
+      next.tweetMenu[key] = next.tweetMenu[key] === true;
+    }
     return next;
   }
 
